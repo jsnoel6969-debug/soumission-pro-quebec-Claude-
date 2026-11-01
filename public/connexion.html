@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="fr-CA">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Connexion | Soumission Pro</title>
+  <meta name="theme-color" content="#101b26">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/auth-page.js"></script>
+</head>
+<body class="auth-page">
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Soumission Pro</a>
+      <nav class="site-nav"><a class="link" href="/app?demo=1">Démo sans compte</a></nav>
+    </div>
+  </header>
+
+  <main class="auth-main">
+    <div class="slip auth-card">
+      <span class="slip-perf" aria-hidden="true"></span>
+
+      <!-- Inscription / connexion -->
+      <div id="mainPanel">
+        <h1 id="authTitle">Crée ton compte</h1>
+        <p class="lede" id="authLede"><span data-cfg="trialDays">14</span> jours gratuits. Aucune carte de crédit.</p>
+
+        <div class="auth-tabs" role="tablist" aria-label="Choisir une action">
+          <button type="button" role="tab" id="tab-inscription" aria-controls="signupForm" aria-selected="true">Créer un compte</button>
+          <button type="button" role="tab" id="tab-connexion" aria-controls="loginForm" aria-selected="false">Se connecter</button>
+        </div>
+
+        <form id="signupForm" class="form-grid" role="tabpanel" aria-labelledby="tab-inscription" novalidate>
+          <div class="alert alert-error" role="alert" hidden></div>
+          <div class="field" data-field="displayName">
+            <label for="s-name">Ton prénom</label>
+            <input class="input" id="s-name" name="displayName" autocomplete="given-name" maxlength="80" required>
+            <span class="hint">Il signe tes messages de relance.</span>
+          </div>
+          <div class="field" data-field="company">
+            <label for="s-company">Entreprise (facultatif)</label>
+            <input class="input" id="s-company" name="company" autocomplete="organization" maxlength="120">
+          </div>
+          <div class="field" data-field="email">
+            <label for="s-email">Courriel</label>
+            <input class="input" id="s-email" name="email" type="email" inputmode="email" autocomplete="email" required>
+          </div>
+          <div class="field" data-field="password">
+            <label for="s-password">Mot de passe</label>
+            <div class="pw-wrap">
+              <input class="input" id="s-password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+              <button class="btn btn-quiet btn-sm pw-toggle" type="button" data-toggle-pw="s-password">Afficher</button>
+            </div>
+            <span class="hint">8 caractères minimum.</span>
+          </div>
+          <div class="field" data-field="acceptTerms">
+            <label class="check">
+              <input type="checkbox" name="acceptTerms" required>
+              <span>J'accepte les <a href="/conditions" target="_blank" rel="noopener">conditions d'utilisation</a> et la <a href="/confidentialite" target="_blank" rel="noopener">politique de confidentialité</a>.</span>
+            </label>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">Créer mon compte</button>
+        </form>
+
+        <form id="loginForm" class="form-grid" role="tabpanel" aria-labelledby="tab-connexion" novalidate hidden>
+          <div class="alert alert-error" role="alert" hidden></div>
+          <div class="field" data-field="email">
+            <label for="l-email">Courriel</label>
+            <input class="input" id="l-email" name="email" type="email" inputmode="email" autocomplete="email" required>
+          </div>
+          <div class="field" data-field="password">
+            <label for="l-password">Mot de passe</label>
+            <div class="pw-wrap">
+              <input class="input" id="l-password" name="password" type="password" autocomplete="current-password" required>
+              <button class="btn btn-quiet btn-sm pw-toggle" type="button" data-toggle-pw="l-password">Afficher</button>
+            </div>
+          </div>
+          <button class="btn btn-ink btn-block" type="submit">Se connecter</button>
+          <p class="auth-alt"><button type="button" id="forgotLink">Mot de passe oublié?</button></p>
+        </form>
+      </div>
+
+      <!-- Mot de passe oublié -->
+      <div id="resetPanel" hidden>
+        <h1>Mot de passe oublié</h1>
+        <p class="lede">Entre ton courriel. Si un compte existe, on t'envoie un lien pour choisir un nouveau mot de passe.</p>
+        <form id="resetForm" class="form-grid" novalidate>
+          <div class="alert alert-error" role="alert" hidden></div>
+          <div class="field" data-field="email">
+            <label for="r-email">Courriel</label>
+            <input class="input" id="r-email" name="email" type="email" inputmode="email" autocomplete="email" required>
+          </div>
+          <button class="btn btn-ink btn-block" type="submit">Recevoir le lien</button>
+        </form>
+        <div class="alert alert-ok" id="resetDone" role="status" hidden></div>
+        <p class="auth-alt"><button type="button" id="backToLogin">Retour à la connexion</button></p>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

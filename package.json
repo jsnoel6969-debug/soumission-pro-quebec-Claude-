@@ -1,0 +1,16 @@
+{
+  "name": "soumission-pro-quebec",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "db:migrate:local": "wrangler d1 migrations apply soumission-pro --local",
+    "db:migrate:remote": "wrangler d1 migrations apply soumission-pro --remote",
+    "deploy": "wrangler deploy",
+    "test": "node scripts/e2e.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

@@ -1,0 +1,4 @@
+# Copie en .dev.vars pour wrangler dev (jamais commité)
+ADMIN_TOKEN=change-moi-au-moins-24-caracteres-aleatoires
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=

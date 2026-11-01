@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="fr-CA">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Nouveau mot de passe | Soumission Pro</title>
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#101b26">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/reset-page.js"></script>
+</head>
+<body class="auth-page">
+  <header class="site-header">
+    <div class="wrap"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Soumission Pro</a></div>
+  </header>
+  <main class="auth-main">
+    <div class="slip auth-card">
+      <span class="slip-perf" aria-hidden="true"></span>
+      <h1>Nouveau mot de passe</h1>
+      <p class="lede">Choisis un mot de passe d'au moins 8 caractères.</p>
+      <form id="newPwForm" class="form-grid" novalidate>
+        <div class="alert alert-error" role="alert" hidden></div>
+        <div class="field" data-field="password">
+          <label for="n-password">Nouveau mot de passe</label>
+          <input class="input" id="n-password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <div class="field" data-field="confirm">
+          <label for="n-confirm">Confirme le mot de passe</label>
+          <input class="input" id="n-confirm" name="confirm" type="password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <button class="btn btn-ink btn-block" type="submit">Enregistrer et ouvrir l'application</button>
+      </form>
+      <p class="auth-alt"><a href="/connexion?mode=oubli">Demander un nouveau lien</a></p>
+    </div>
+  </main>
+</body>
+</html>

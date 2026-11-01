@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="fr-CA">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mes soumissions | Soumission Pro</title>
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#101b26">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <header class="appbar">
+    <div class="wrap">
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Soumission Pro</a>
+      <div class="appbar-right">
+        <span class="plan-chip" id="planChip" hidden></span>
+        <button class="btn btn-quiet btn-sm" id="accountBtn" type="button">Compte</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="banners"></div>
+
+  <main class="app-main">
+    <div class="wrap">
+      <p class="loading" id="loading">Chargement de tes soumissions…</p>
+
+      <div id="content" hidden>
+        <dl class="stats" id="stats"></dl>
+
+        <section class="block" aria-labelledby="dueTitle">
+          <div class="block-head">
+            <h2 id="dueTitle">À relancer</h2>
+            <span class="count num" id="dueCount"></span>
+          </div>
+          <div class="list list-due" id="dueList"></div>
+        </section>
+
+        <section class="block" aria-labelledby="allTitle">
+          <div class="block-head">
+            <h2 id="allTitle">Toutes les soumissions</h2>
+            <span class="count num" id="allCount"></span>
+          </div>
+          <div class="toolbar">
+            <label class="sr-only" for="search">Chercher un client ou un projet</label>
+            <input class="input" id="search" type="search" placeholder="Chercher un client ou un projet" autocomplete="off">
+            <div class="segmented" role="group" aria-label="Filtrer par statut" id="filters">
+              <button type="button" data-filter="all" aria-pressed="true">Toutes</button>
+              <button type="button" data-filter="pending" aria-pressed="false">En attente</button>
+              <button type="button" data-filter="accepted" aria-pressed="false">Acceptées</button>
+              <button type="button" data-filter="refused" aria-pressed="false">Refusées</button>
+            </div>
+          </div>
+          <div class="list rows" id="allList"></div>
+        </section>
+
+        <p class="foot-note">Les dates de relance sont des rappels. Soumission Pro ne contacte jamais tes clients : c'est toi qui envoies.</p>
+      </div>
+    </div>
+  </main>
+
+  <button class="btn btn-primary fab" id="newBtn" type="button" hidden>+ Nouvelle soumission</button>
+
+  <!-- Soumission -->
+  <dialog class="sheet" id="quoteDialog" aria-labelledby="quoteTitle">
+    <form id="quoteForm" novalidate>
+      <div class="sheet-head">
+        <h2 id="quoteTitle">Nouvelle soumission</h2>
+        <button class="close-x" type="button" data-close aria-label="Fermer">×</button>
+      </div>
+      <div class="sheet-body">
+        <div class="alert alert-error" id="quoteError" role="alert" hidden></div>
+        <div class="field" data-field="client">
+          <label for="f-client">Client</label>
+          <input class="input" id="f-client" name="client" required maxlength="120" autocomplete="off" placeholder="Ex. Famille Tremblay">
+        </div>
+        <div class="field" data-field="project">
+          <label for="f-project">Projet</label>
+          <input class="input" id="f-project" name="project" required maxlength="160" autocomplete="off" placeholder="Ex. Rénovation cuisine">
+        </div>
+        <div class="detail-switch">
+          <button class="btn btn-ghost on-paper btn-sm" type="button" id="detailToggle" aria-expanded="false" aria-controls="detailBox">Détailler avec lignes et TPS/TVQ</button>
+          <span class="hint" id="detailHint">Facultatif. Ton client verra le détail sur sa soumission en ligne.</span>
+        </div>
+        <fieldset class="detail" id="detailBox" hidden>
+          <legend>Détail de la soumission</legend>
+          <div class="lines" id="lines"></div>
+          <div class="line-tools">
+            <button class="btn btn-ink btn-sm" type="button" id="addLine">Ajouter une ligne</button>
+            <div class="quick-lines" id="quickLines" aria-label="Lignes fréquentes">
+              <button type="button" data-line="Main-d’œuvre" data-unit="h">Main-d’œuvre</button>
+              <button type="button" data-line="Matériaux et fournitures" data-unit="">Matériaux</button>
+              <button type="button" data-line="Déplacement" data-unit="">Déplacement</button>
+              <button type="button" data-line="Protection du chantier et nettoyage" data-unit="">Nettoyage</button>
+              <button type="button" data-line="Disposition des rebuts (conteneur)" data-unit="">Conteneur</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="field" data-field="discount">
+              <label for="f-discount">Rabais ($)</label>
+              <input class="input num" id="f-discount" name="discount" inputmode="decimal" autocomplete="off" placeholder="0">
+            </div>
+            <div class="field">
+              <span class="label">Taxes</span>
+              <label class="check check-box"><input type="checkbox" id="f-taxes" name="taxes"><span>Ajouter TPS 5 % et TVQ 9,975 %</span></label>
+            </div>
+          </div>
+          <dl class="totals" id="totals"></dl>
+          <div class="form-row">
+            <div class="field" data-field="validUntil">
+              <label for="f-validUntil">Valide jusqu’au</label>
+              <input class="input" id="f-validUntil" name="validUntil" type="date">
+            </div>
+            <div class="field" data-field="clientAddress">
+              <label for="f-clientAddress">Adresse des travaux</label>
+              <input class="input" id="f-clientAddress" name="clientAddress" maxlength="200" autocomplete="off">
+            </div>
+          </div>
+          <div class="field" data-field="terms">
+            <label for="f-terms">Conditions (visibles par ton client)</label>
+            <textarea class="textarea" id="f-terms" name="terms" maxlength="4000" placeholder="Modalités de paiement, inclusions, exclusions, garantie…"></textarea>
+          </div>
+        </fieldset>
+        <div class="form-row">
+          <div class="field" data-field="amount">
+            <label for="f-amount" id="amountLabel">Montant ($)</label>
+            <input class="input num" id="f-amount" name="amount" required inputmode="decimal" autocomplete="off" placeholder="8 450">
+          </div>
+          <div class="field" data-field="status">
+            <label for="f-status">Statut</label>
+            <select class="select" id="f-status" name="status">
+              <option value="pending">En attente</option>
+              <option value="accepted">Acceptée</option>
+              <option value="refused">Refusée</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field" data-field="sentOn">
+            <label for="f-sentOn">Envoyée le</label>
+            <input class="input" id="f-sentOn" name="sentOn" type="date" required>
+          </div>
+          <div class="field" data-field="followUpOn">
+            <label for="f-followUpOn">Prochaine relance</label>
+            <input class="input" id="f-followUpOn" name="followUpOn" type="date">
+            <span class="hint" id="followHint">3 jours après l'envoi, par défaut.</span>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field" data-field="clientEmail">
+            <label for="f-clientEmail">Courriel du client</label>
+            <input class="input" id="f-clientEmail" name="clientEmail" type="email" inputmode="email" autocomplete="off" maxlength="254">
+          </div>
+          <div class="field" data-field="clientPhone">
+            <label for="f-clientPhone">Cellulaire du client</label>
+            <input class="input" id="f-clientPhone" name="clientPhone" type="tel" inputmode="tel" autocomplete="off" maxlength="40">
+          </div>
+        </div>
+        <div class="field" data-field="notes">
+          <label for="f-notes">Notes privées</label>
+          <textarea class="textarea" id="f-notes" name="notes" maxlength="2000" placeholder="Ce que le client a demandé, ce qui pourrait le faire hésiter… Jamais visible par le client."></textarea>
+        </div>
+        <section class="link-box" id="linkBox" aria-labelledby="linkTitle" hidden></section>
+      </div>
+      <div class="sheet-foot">
+        <button class="btn btn-quiet" type="button" id="deleteQuote" hidden>Supprimer</button>
+        <span class="grow"></span>
+        <button class="btn btn-ghost on-paper" type="button" data-close>Annuler</button>
+        <button class="btn btn-ghost on-paper" type="submit" id="saveQuote">Enregistrer</button>
+        <button class="btn btn-ink" type="submit" id="saveSend" data-send="1" hidden>Enregistrer et envoyer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Relance -->
+  <dialog class="sheet" id="followDialog" aria-labelledby="followTitle">
+    <div class="sheet-head">
+      <h2 id="followTitle">Relancer</h2>
+      <button class="close-x" type="button" data-close aria-label="Fermer">×</button>
+    </div>
+    <div class="sheet-body">
+      <p class="msg-context" id="followContext"></p>
+      <div class="channel-tabs" role="group" aria-label="Type de message">
+        <button type="button" data-channel="email" aria-pressed="true">Courriel</button>
+        <button type="button" data-channel="sms" aria-pressed="false">Texto</button>
+      </div>
+      <div class="field">
+        <label for="followMessage">Message (tu peux le modifier)</label>
+        <textarea class="textarea" id="followMessage" rows="10"></textarea>
+      </div>
+      <div class="send-row">
+        <button class="btn btn-ink" type="button" id="copyMsg">Copier le message</button>
+        <a class="btn btn-ghost on-paper" id="openMail" href="#" hidden>Ouvrir dans le courriel</a>
+        <a class="btn btn-ghost on-paper" id="openSms" href="#" hidden>Ouvrir dans les textos</a>
+      </div>
+      <p class="hint msg-context" id="contactHint" hidden></p>
+      <div class="done-box" id="doneBox">
+        <span class="label" id="nextLabel">Une fois envoyé, prochaine relance :</span>
+        <div class="chips" id="nextChips" role="radiogroup" aria-labelledby="nextLabel"></div>
+        <button class="btn btn-primary" type="button" id="markDone">Marquer comme relancée</button>
+      </div>
+      <div class="btn-row" id="sendDoneRow" hidden>
+        <button class="btn btn-primary" type="button" id="sendDone">C’est envoyé</button>
+      </div>
+      <p class="hint msg-context">Vérifie que ton client accepte d'être contacté par ce moyen. Rien n'est envoyé sans toi.</p>
+    </div>
+  </dialog>
+
+  <!-- Compte -->
+  <dialog class="sheet" id="accountDialog" aria-labelledby="accountTitle">
+    <div class="sheet-head">
+      <h2 id="accountTitle">Compte</h2>
+      <button class="close-x" type="button" data-close aria-label="Fermer">×</button>
+    </div>
+    <div class="sheet-body" id="accountBody"></div>
+  </dialog>
+
+  <input type="file" id="importFile" accept="application/json,.json" hidden>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

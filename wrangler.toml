@@ -1,0 +1,35 @@
+name = "soumission-pro-v2"   # Worker séparé : la prod actuelle et le staging ne sont pas touchés
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+# Pages statiques (landing, app, connexion, légal) servies par Cloudflare.
+# Les chemins /api/* ne correspondent à aucun fichier et tombent dans le Worker.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+html_handling = "auto-trailing-slash"
+not_found_handling = "404-page"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "soumission-pro"
+database_id = "d5281064-4fb5-43ec-bce0-ab2359099bc1"   # créée le 31 oct. 2026 (ENAM), tables déjà en place
+migrations_dir = "migrations"
+
+[vars]
+APP_URL = "https://soumission-pro-v2.jsnoel6969.workers.dev"
+TRIAL_DAYS = "14"
+FOUNDER_SEATS = "10"
+PRICE_MONTHLY_CENTS = "2900"          # doit correspondre au prix Stripe (affichage + MRR)
+SUPPORT_EMAIL = ""                     # courriel public de support (affiché sur le site)
+LEGAL_NAME = ""                        # personne responsable des renseignements personnels (Loi 25)
+STRIPE_PRICE_ID = ""                   # price_... (abonnement mensuel)
+STRIPE_AUTOMATIC_TAX = "false"         # "true" seulement si Stripe Tax est configuré
+MAIL_FROM = ""                         # ex: "Soumission Pro <aide@tondomaine.ca>" (optionnel, avec RESEND_API_KEY)
+
+# Secrets (jamais dans ce fichier) :
+#   npx wrangler secret put ADMIN_TOKEN
+#   npx wrangler secret put STRIPE_SECRET_KEY
+#   npx wrangler secret put STRIPE_WEBHOOK_SECRET
+#   npx wrangler secret put RESEND_API_KEY        (optionnel)
