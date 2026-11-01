@@ -54,8 +54,10 @@ function sourceOf(quote) {
   if (snap && snap.detailed) {
     return { items: snap.items, discount: snap.discount, taxes: snap.taxes, terms: snap.terms, project: snap.project };
   }
-  const items = parseItems(quote.items_json);
-  if (items) {
+  const all = parseItems(quote.items_json);
+  // Options : seulement celles que le client a retenues (une option jamais choisie n'est pas facturée).
+  const items = all ? all.filter((it) => !it.optional || it.selected === true) : null;
+  if (items && items.length) {
     return {
       items: itemsToJson(items), discount: (quote.discount_cents || 0) / 100, taxes: Boolean(quote.taxes),
       terms: quote.terms || '', project: quote.project,

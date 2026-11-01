@@ -900,6 +900,8 @@ function openAccount() {
   const taxesBox = h('input', { type: 'checkbox', id: 'acct-taxes' });
   taxesBox.checked = biz.chargeTaxes !== false;
   const profileError = h('div', { class: 'alert alert-error', role: 'alert', hidden: true });
+  // Confirmation visible à côté du bouton, en plus du message flottant.
+  const savedNote = h('span', { class: 'saved-note', role: 'status', 'aria-live': 'polite' });
   const fieldWrap = (label, key, hint) => h('div', { class: 'field', dataset: { field: key } },
     h('label', { for: fields[key].id }, label), fields[key], hint ? h('span', { class: 'hint' }, hint) : null);
   const profileForm = h('form', {
@@ -907,6 +909,7 @@ function openAccount() {
     onSubmit: async (ev) => {
       ev.preventDefault();
       profileError.hidden = true;
+      savedNote.textContent = '';
       profileForm.querySelectorAll('.field-error').forEach((el) => el.remove());
       const v = (k) => fields[k].value;
       try {
@@ -920,6 +923,7 @@ function openAccount() {
           },
         } });
         render();
+        savedNote.textContent = `Profil enregistré à ${new Intl.DateTimeFormat('fr-CA', { timeStyle: 'short' }).format(new Date())}.`;
         toast('Profil enregistré.');
       } catch (e) {
         const wrap = e.field && profileForm.querySelector(`[data-field="${e.field}"]`);
@@ -939,7 +943,9 @@ function openAccount() {
   fieldWrap('Conditions par défaut', 'defaultTerms', 'Reprises sur chaque nouvelle soumission détaillée. Tu peux les modifier au cas par cas.'),
   fieldWrap('Modalités de paiement', 'paymentInstructions', 'Affichées sur tes factures et dans les messages d’envoi.'),
   fieldWrap('Délai de paiement des factures (jours)', 'invoiceDueDays'),
-  h('div', {}, h('button', { class: 'btn btn-ink btn-sm', type: 'submit' }, 'Enregistrer le profil')));
+  h('div', { class: 'btn-row save-row' },
+    h('button', { class: 'btn btn-ink btn-sm', type: 'submit' }, 'Enregistrer le profil'),
+    savedNote));
 
   const pw = h('input', { class: 'input', type: 'password', id: 'acct-delete-pw', autocomplete: 'current-password' });
   body.replaceChildren(
@@ -1004,7 +1010,7 @@ function wireStatic() {
   $('detailToggle').addEventListener('click', () => setDetailed(!state.detailed, { seedFromAmount: true }));
   quoteLines = createLineEditor({
     listEl: $('lines'), totalsEl: $('totals'), discountInput: form.elements.discount, taxesInput: form.elements.taxes,
-    idPrefix: 'line', isWritable: canWrite,
+    idPrefix: 'line', isWritable: canWrite, allowOptional: true,
   });
   $('addLine').addEventListener('click', () => quoteLines.add());
   $('quickLines').addEventListener('click', (ev) => {

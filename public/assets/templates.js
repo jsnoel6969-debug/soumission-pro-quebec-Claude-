@@ -46,7 +46,7 @@ export function buildMessage(q, { channel = 'email', signer = {}, link = '', kin
 
 Merci de votre intérêt. Voici notre soumission pour ${project}, au montant de ${total}.
 
-Vous pouvez la consulter, l'enregistrer en PDF et l'accepter en ligne :
+Vous pouvez la consulter, l'enregistrer en PDF${(q.items || []).some((it) => it.optional) ? ', choisir vos options' : ''} et l'accepter en ligne :
 ${link}
 
 Je reste disponible pour toute question.

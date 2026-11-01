@@ -94,7 +94,7 @@ export function cleanItems(raw) {
     const unitCents = toCents(r.unitPrice);
     if (unitCents === null) throw bad(`items.${i}.unitPrice`, `Ligne ${n} : prix invalide.`);
     const unit = str(r.unit, `items.${i}.unit`, { max: 12, label: `Ligne ${n} : l'unité` });
-    return { description, unit, qtyMilli, unitCents };
+    return { description, unit, qtyMilli, unitCents, optional: r.optional === true };
   });
 }
 
@@ -115,7 +115,9 @@ function detailedMoney(items, input) {
   const discount = discountRaw === undefined || discountRaw === null || discountRaw === '' ? 0 : toCents(discountRaw);
   if (discount === null) throw bad('discount', 'Rabais invalide.');
   const taxes = input.taxes === true;
-  const t = computeTotals(items, discount, taxes);
+  if (items.every((it) => it.optional)) throw bad('items', 'Garde au moins une ligne incluse : les options s’ajoutent au prix de base.');
+  // Les options ne comptent pas dans le prix de base : le client les ajoute lui-même.
+  const t = computeTotals(items.map((it) => ({ ...it, excluded: it.optional })), discount, taxes);
   if (t.error === 'discount') throw bad('discount', 'Le rabais dépasse le sous-total.');
   if (t.error) throw bad('items', 'Total trop élevé.');
   return {
@@ -184,6 +186,7 @@ export function cleanInvoice(input) {
   if (!input || typeof input !== 'object') throw bad('invoice', 'Facture invalide.');
   const items = cleanItems(input.items);
   if (!items) throw bad('items.0.description', 'Ajoute au moins une ligne à la facture.');
+  for (const it of items) it.optional = false; // une facture n'a pas d'options : tout ce qui y figure est dû
   const money = detailedMoney(items, input);
   const issued = isoDate(input.issuedOn ?? input.issued_on, 'issuedOn', { required: true, label: 'La date de facture' });
   const due = isoDate(input.dueOn ?? input.due_on, 'dueOn', { required: true, label: "La date d'échéance" });
@@ -265,6 +268,8 @@ export function itemsToJson(items) {
     qty: it.qtyMilli / 1000,
     unitPrice: it.unitCents / 100,
     total: it.lineCents / 100,
+    optional: Boolean(it.optional),
+    ...(it.optional && typeof it.selected === 'boolean' ? { selected: it.selected } : {}),
   }));
 }
 

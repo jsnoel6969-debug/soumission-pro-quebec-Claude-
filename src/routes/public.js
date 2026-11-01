@@ -3,6 +3,7 @@ import { HttpError, json, readJson, clientIp } from '../lib/http.js';
 import { getSessionUser } from '../lib/session.js';
 import { rateLimit, track } from '../lib/guards.js';
 import { itemsToJson, multiline, parseItems, str } from '../lib/validate.js';
+import { computeTotals } from '../../public/assets/money.js';
 
 export const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
 const VIEW_WINDOW_MS = 30 * 60 * 1000; // une « ouverture » = une visite, pas chaque rechargement
@@ -23,7 +24,9 @@ async function findByToken(env, token) {
 
 /** Contenu du document tel que le client le voit (jamais les notes privées ni les coordonnées du client). */
 function documentOf(row) {
-  const items = parseItems(row.items_json);
+  // Après acceptation, les options non retenues disparaissent du document (selected === false).
+  const all = parseItems(row.items_json);
+  const items = all ? all.filter((it) => !(it.optional && it.selected === false)) : null;
   return {
     number: row.number || '',
     project: row.project,
@@ -117,13 +120,37 @@ export async function decidePublicQuote(request, env, token) {
   }
   const message = multiline(body.message, 'message', { max: 1000, label: 'Le message' }) || null;
   const now = Date.now();
-  const snapshot = accept ? JSON.stringify(documentOf(row)) : null;
+
+  // Options choisies par le client : elles s'ajoutent au prix de base, taxes recalculées par le même module.
+  let accepted = row;
+  const items = parseItems(row.items_json);
+  if (accept && items && items.some((it) => it.optional)) {
+    const raw = Array.isArray(body.options) ? body.options : [];
+    const chosen = new Set();
+    for (const v of raw) {
+      if (!Number.isInteger(v) || !items[v] || !items[v].optional) {
+        throw new HttpError(400, 'validation_error', 'Option invalide.', { field: 'options' });
+      }
+      chosen.add(v);
+    }
+    const lines = items.map((it, i) => ({ ...it, selected: it.optional ? chosen.has(i) : undefined }));
+    const t = computeTotals(lines.map((l) => ({ ...l, excluded: l.optional && !l.selected })), row.discount_cents || 0, Boolean(row.taxes));
+    if (t.error) throw new HttpError(400, 'validation_error', 'Total invalide.', { field: 'options' });
+    accepted = {
+      ...row,
+      items_json: JSON.stringify(lines),
+      subtotal_cents: t.subtotalCents, gst_cents: t.gstCents, qst_cents: t.qstCents, amount_cents: t.totalCents,
+    };
+  }
+  const snapshot = accept ? JSON.stringify(documentOf(accepted)) : null;
 
   const res = await env.DB.prepare(
     `UPDATE quotes SET status = ?, decided_online_at = ?, decided_by_name = ?, client_message = ?, accepted_snapshot = ?,
-       follow_up_on = NULL, updated_at = ?
+       items_json = ?, subtotal_cents = ?, gst_cents = ?, qst_cents = ?, amount_cents = ?, follow_up_on = NULL, updated_at = ?
      WHERE id = ? AND status = 'pending'`
-  ).bind(accept ? 'accepted' : 'refused', now, name || null, message, snapshot, now, row.id).run();
+  ).bind(accept ? 'accepted' : 'refused', now, name || null, message, snapshot,
+    accepted.items_json ?? null, accepted.subtotal_cents ?? null, accepted.gst_cents || 0, accepted.qst_cents || 0, accepted.amount_cents,
+    now, row.id).run();
   if (!res.meta || res.meta.changes !== 1) throw new HttpError(409, 'already_decided', 'Cette soumission a déjà reçu une réponse.');
 
   await track(env, accept ? 'quote_accepted_online' : 'quote_refused_online', row.user_id);

@@ -88,13 +88,13 @@ function moneyFields(q) {
   }
   const lines = items.map((it) => ({
     description: String(it.description).trim(), unit: String(it.unit || '').trim(),
-    qtyMilli: toQtyMilli(it.qty), unitCents: toCents(it.unitPrice),
+    qtyMilli: toQtyMilli(it.qty), unitCents: toCents(it.unitPrice), optional: it.optional === true,
   }));
   const discountCents = q.discount === '' || q.discount === null || q.discount === undefined ? 0 : toCents(q.discount);
-  const t = computeTotals(lines, discountCents, q.taxes === true);
+  const t = computeTotals(lines.map((l) => ({ ...l, excluded: l.optional })), discountCents, q.taxes === true);
   return {
     detailed: true,
-    items: lines.map((l, i) => ({ description: l.description, unit: l.unit, qty: l.qtyMilli / 1000, unitPrice: l.unitCents / 100, total: t.lineTotals[i] / 100 })),
+    items: lines.map((l, i) => ({ description: l.description, unit: l.unit, qty: l.qtyMilli / 1000, unitPrice: l.unitCents / 100, total: t.lineTotals[i] / 100, optional: l.optional })),
     subtotal: t.subtotalCents / 100, discount: t.discountCents / 100, taxes: q.taxes === true,
     gst: t.gstCents / 100, qst: t.qstCents / 100, amount: t.totalCents / 100,
   };

@@ -10,6 +10,7 @@ export const lineIsBlank = (l) => !String(l.description ?? '').trim() && !String
 /** Lignes renvoyées par l'API (nombres) → lignes éditables (texte à la québécoise). */
 export const toEditable = (items) => (items || []).map((it) => ({
   description: it.description, qty: decimalText(it.qty), unit: it.unit || '', unitPrice: decimalText(it.unitPrice),
+  optional: Boolean(it.optional),
 }));
 
 /**
@@ -21,12 +22,12 @@ export const toEditable = (items) => (items || []).map((it) => ({
  * @param {string} o.idPrefix          préfixe des id (ex. « line » → line-qty-0)
  * @param {() => boolean} o.isWritable
  */
-export function createLineEditor({ listEl, totalsEl, discountInput, taxesInput, idPrefix = 'line', isWritable = () => true }) {
+export function createLineEditor({ listEl, totalsEl, discountInput, taxesInput, idPrefix = 'line', isWritable = () => true, allowOptional = false }) {
   let lines = [];
   let active = true;
 
   function calc() {
-    return lines.map((l) => ({ qtyMilli: toQtyMilli(l.qty) ?? 0, unitCents: toCents(l.unitPrice) ?? 0 }));
+    return lines.map((l) => ({ qtyMilli: toQtyMilli(l.qty) ?? 0, unitCents: toCents(l.unitPrice) ?? 0, excluded: allowOptional && Boolean(l.optional) }));
   }
 
   function totals() {
@@ -53,7 +54,8 @@ export function createLineEditor({ listEl, totalsEl, discountInput, taxesInput, 
         rows.push(row('TPS (5 %)', money2(t.gstCents / 100)));
         rows.push(row('TVQ (9,975 %)', money2(t.qstCents / 100)));
       }
-      rows.push(row('Total', money2(t.totalCents / 100), 'is-total'));
+      rows.push(row(t.optionsCents ? 'Total de base' : 'Total', money2(t.totalCents / 100), 'is-total'));
+      if (t.optionsCents) rows.push(row('Options proposées, avant taxes', `+ ${money2(t.optionsCents / 100)}`, 'is-options'));
     }
     totalsEl.replaceChildren(...rows);
   }
@@ -78,6 +80,10 @@ export function createLineEditor({ listEl, totalsEl, discountInput, taxesInput, 
           h('div', { class: 'field' }, h('label', { for: `${idPrefix}-unit-${i}` }, 'Unité'), input('unit', { placeholder: 'h, pi²', max: '12' })),
           h('div', { class: 'field' }, h('label', { for: `${idPrefix}-unitPrice-${i}` }, 'Prix unitaire'), input('unitPrice', { num: true, placeholder: '0,00' })),
           h('div', { class: 'line-total' }, h('span', { class: 'label' }, 'Montant'), h('span', { class: 'num', id: `${idPrefix}-total-${i}` }, '—'))),
+        allowOptional ? h('label', { class: 'check line-opt' },
+          h('input', { type: 'checkbox', id: `${idPrefix}-optional-${i}`, checked: Boolean(line.optional), disabled: !writable,
+            onChange: (ev) => { line.optional = ev.target.checked; update(); } }),
+          h('span', {}, 'Option : ton client choisit de l’ajouter ou non')) : null,
         writable && lines.length > 1
           ? h('button', { class: 'btn btn-quiet btn-sm line-remove', type: 'button', onClick: () => { lines.splice(i, 1); render(); update(); } }, `Retirer la ligne ${n}`)
           : null);
@@ -110,7 +116,7 @@ export function createLineEditor({ listEl, totalsEl, discountInput, taxesInput, 
       lines = lines.filter((l) => !lineIsBlank(l));
       render();
       update();
-      return lines.map((l) => ({ description: l.description, qty: l.qty, unit: l.unit, unitPrice: l.unitPrice }));
+      return lines.map((l) => ({ description: l.description, qty: l.qty, unit: l.unit, unitPrice: l.unitPrice, optional: allowOptional && Boolean(l.optional) }));
     },
     totals,
     update,

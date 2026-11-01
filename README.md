@@ -1,7 +1,13 @@
-# Soumission Pro v2.2
+# Soumission Pro v2.3
 
 Du prototype local (données dans un seul navigateur, aucun paiement) à un SaaS qui encaisse :
 comptes, synchronisation cellulaire/ordinateur, essai gratuit, abonnement Stripe, export, suppression de compte, tableau de bord KPI.
+
+**v2.3 (1er nov. 2026) — options (upsell)**
+- Une ligne peut être marquée « Option » : elle n'entre pas dans le prix de base. Sur sa page, le client coche les options
+  voulues ; le total et les taxes se recalculent en direct (même money.js que le serveur). L'acceptation fige les options
+  retenues et le montant ; la facture ne reprend que les options retenues.
+- Correctif : les messages de confirmation s'affichent par-dessus les fenêtres ouvertes.
 
 **v2.2 (1er nov. 2026) — factures**
 - Une soumission (acceptée ou en attente) devient une facture en un geste : lignes, rabais, TPS/TVQ et client repris
@@ -44,7 +50,7 @@ soumission-pro/
 ├── legacy/                  code du staging du 25 oct. récupéré (base du futur forfait Pro)
 └── scripts/
     ├── local-server.mjs       serveur de test sans wrangler (Node 22 + SQLite)
-    └── e2e.mjs                276 vérifications API (145 avec Stripe, 131 sans)
+    └── e2e.mjs                290 vérifications API (152 avec Stripe, 138 sans)
 ```
 
 ---

@@ -37,14 +37,13 @@ en ligne, relances, factures. Propriétaire : Jay (Montréal). Interface en fran
 ```
 STRIPE_MOCK=1 node scripts/local-server.mjs 8787 &   # Node 22+, SQLite intégré, aucune install
 BILLING=off node scripts/local-server.mjs 8788 &
-node scripts/e2e.mjs http://localhost:8787            # 145 vérifications
-node scripts/e2e.mjs http://localhost:8788 --billing-off   # 131 vérifications
+node scripts/e2e.mjs http://localhost:8787            # 152 vérifications
+node scripts/e2e.mjs http://localhost:8788 --billing-off   # 138 vérifications
 ```
 Redémarrer les serveurs entre deux passes (limite de 10 inscriptions par heure et par IP).
 
 ## Feuille de route (décidée le 31 oct. 2026)
-1. Lignes optionnelles dans la soumission : le client coche les options, le total et les taxes se recalculent,
-   l'acceptation fige le choix.
+1. ✔ v2.3 : lignes optionnelles (item.optional ; à l'acceptation, item.selected et totaux figés ; facture = options retenues).
 2. Facture d'acompte automatique à l'acceptation (pourcentage dans le profil).
 3. Bibliothèque d'articles et de forfaits réutilisables (prix, unités, marge).
 4. Demande d'avis Google proposée quand une facture passe à « payée ».

@@ -88,6 +88,11 @@ export function toast(message, { error = false } = {}) {
     el = h('div', { id: 'toast', class: 'toast', role: 'status', 'aria-live': 'polite' });
     document.body.append(el);
   }
+  // Une fenêtre modale ouverte passe au-dessus de toute la page (couche supérieure du navigateur) :
+  // le message doit vivre DANS la fenêtre ouverte, sinon il reste caché derrière.
+  const dialogs = document.querySelectorAll('dialog[open]');
+  const host = dialogs.length ? dialogs[dialogs.length - 1] : document.body;
+  if (el.parentElement !== host) host.append(el);
   el.textContent = message;
   el.classList.toggle('is-error', error);
   el.hidden = false;
@@ -268,8 +273,9 @@ export function validateQuote(q) {
       if (qtyMilli === null) return { field: `items.${i}.qty`, message: `Ligne ${n} : quantité invalide.` };
       const unitCents = toCents(it.unitPrice);
       if (unitCents === null) return { field: `items.${i}.unitPrice`, message: `Ligne ${n} : prix invalide.` };
-      lines.push({ qtyMilli, unitCents });
+      lines.push({ qtyMilli, unitCents, excluded: it.optional === true });
     }
+    if (lines.every((l) => l.excluded)) return { field: 'items.0.description', message: 'Garde au moins une ligne incluse : les options s’ajoutent au prix de base.' };
     const discount = q.discount === '' || q.discount === null || q.discount === undefined ? 0 : toCents(q.discount);
     if (discount === null) return { field: 'discount', message: 'Rabais invalide.' };
     const t = computeTotals(lines, discount, q.taxes === true);

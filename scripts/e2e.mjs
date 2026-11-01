@@ -330,6 +330,32 @@ async function main() {
   r = await visitor.req('GET', `/api/public/invoices/${ftok}`);
   check('lien facture désactivé', r.status === 404, r.status);
 
+  // --- Options (v2.3) ---
+  r = await a.req('POST', '/api/quotes', { client: 'Opt', project: 'Que des options', sentOn: today,
+    items: [{ description: 'Option A', qty: 1, unitPrice: 100, optional: true }], taxes: true });
+  check('options seules refusées', r.status === 400 && r.data.error.field === 'items', r.data);
+  r = await a.req('POST', '/api/quotes', { client: 'Nadia Côté', project: 'Patio', sentOn: today, taxes: true,
+    items: [{ description: 'Patio en pavé', qty: 1, unitPrice: 1000 }, { description: 'Éclairage DEL', qty: 1, unitPrice: 300, optional: true },
+      { description: 'Scellant', qty: 1, unitPrice: 200, optional: true }] });
+  const oq = r.data.quote;
+  check('prix de base sans options', r.status === 201 && oq.subtotal === 1000 && oq.amount === 1149.75
+    && oq.items[1].optional === true && oq.items[0].optional === false, oq);
+  r = await a.req('POST', `/api/quotes/${oq.id}/share`, {});
+  const otok = r.data.quote.shareToken;
+  r = await visitor.req('GET', `/api/public/quotes/${otok}`);
+  check('options visibles par le client', r.data.quote.items.length === 3 && r.data.quote.items[2].optional === true && r.data.quote.total === 1149.75, r.data.quote);
+  r = await visitor.req('POST', `/api/public/quotes/${otok}/decision`, { decision: 'accept', name: 'Nadia Côté', confirm: true, options: [0] });
+  check('option invalide refusée', r.status === 400 && r.data.error.field === 'options', r.data);
+  r = await visitor.req('POST', `/api/public/quotes/${otok}/decision`, { decision: 'accept', name: 'Nadia Côté', confirm: true, options: [1] });
+  check('acceptée avec option', r.status === 200 && r.data.quote.total === 1494.68 && r.data.quote.items.length === 2
+    && r.data.quote.items[1].description === 'Éclairage DEL', r.data.quote);
+  r = await a.req('GET', '/api/quotes');
+  const oq2 = r.data.quotes.find((q) => q.id === oq.id);
+  check('montant mis à jour', oq2.amount === 1494.68 && oq2.items.find((it) => it.description === 'Scellant').selected === false, oq2);
+  r = await a.req('POST', `/api/quotes/${oq.id}/invoice`, {});
+  check('facture = options retenues', r.status === 201 && r.data.invoice.total === 1494.68 && r.data.invoice.items.length === 2
+    && r.data.invoice.items.every((it) => it.optional === false), r.data.invoice);
+
   // --- Connexion ---
   r = await a.req('POST', '/api/auth/logout', {}); check('logout', r.status === 200 && a.cookie === '');
   r = await a.req('GET', '/api/me'); check('après logout 401', r.status === 401);
@@ -397,7 +423,7 @@ async function main() {
   r = await a.req('GET', '/api/admin/metrics'); check('admin sans jeton 404', r.status === 404);
   r = await a.req('GET', '/api/admin/metrics', undefined, { headers: { authorization: 'Bearer mauvais' } }); check('admin mauvais jeton 404', r.status === 404);
   r = await a.req('GET', '/api/admin/metrics', undefined, { headers: { authorization: `Bearer ${ADMIN}` } });
-  check('admin metrics', r.status === 200 && r.data.invoices.count === 2 && r.data.funnel.users >= 2 && r.data.funnel.activatedUsers >= 1 && r.data.events30d.signup >= 2, r.data);
+  check('admin metrics', r.status === 200 && r.data.invoices.count === 3 && r.data.funnel.users >= 2 && r.data.funnel.activatedUsers >= 1 && r.data.events30d.signup >= 2, r.data);
   r = await a.req('GET', '/api/admin/users', undefined, { headers: { authorization: `Bearer ${ADMIN}` } });
   check('admin users', r.status === 200 && r.data.users.some((u) => u.email === email), r.data);
 

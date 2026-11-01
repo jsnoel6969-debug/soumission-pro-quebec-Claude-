@@ -1,6 +1,7 @@
 // Page client : la soumission telle que le client la voit, avec acceptation ou refus en ligne.
 import { api } from './store.js';
 import { h, money2 } from './utils.js';
+import { computeTotals } from './money.js';
 
 const root = document.getElementById('root');
 const token = location.pathname.split('/').filter(Boolean).pop() || '';
@@ -16,21 +17,22 @@ const dateText = (iso) => {
 };
 const stampText = (ms) => new Intl.DateTimeFormat('fr-CA', { dateStyle: 'long', timeStyle: 'short' }).format(new Date(ms));
 
-function row(label, value, cls = '') {
-  return h('div', { class: `total-row ${cls}` }, h('dt', {}, label), h('dd', { class: 'num' }, value));
+// Options cochées par le client (index des lignes optionnelles), tant que la soumission est en attente.
+const chosen = new Set();
+const hasOptions = (q) => q.detailed && q.items.some((it) => it.optional);
+const canChoose = (q) => KIND === 'quote' && q.status === 'pending' && !q.expired && hasOptions(q);
+
+/** Totaux recalculés avec le même module que le serveur (money.js). */
+function liveTotals(q) {
+  const lines = q.items.map((it, i) => ({
+    qtyMilli: Math.round(it.qty * 1000), unitCents: Math.round(it.unitPrice * 100), excluded: Boolean(it.optional) && !chosen.has(i),
+  }));
+  const t = computeTotals(lines, Math.round(q.discount * 100), q.taxes);
+  if (t.error) return q;
+  return { ...q, subtotal: t.subtotalCents / 100, discount: t.discountCents / 100, gst: t.gstCents / 100, qst: t.qstCents / 100, total: t.totalCents / 100 };
 }
 
-function documentView(q, b, { label = 'Soumission', dates = [], totalLabel = null, partyLabel = 'Préparée pour' } = {}) {
-  const contact = [b.contact, b.phone, b.email, b.address].filter(Boolean);
-  const lines = q.detailed
-    ? q.items.map((it) => h('tr', {},
-      h('td', { class: 'desc' }, it.description),
-      h('td', { class: 'r qty' }, `${fmtQty.format(it.qty)}${it.unit ? ` ${it.unit}` : ''}`),
-      h('td', { class: 'r unit-price' }, money2(it.unitPrice)),
-      h('td', { class: 'r line-amount' }, money2(it.total))))
-    : [h('tr', {}, h('td', { class: 'desc' }, q.project), h('td', { class: 'r qty' }, '1'),
-      h('td', { class: 'r unit-price' }, money2(q.total)), h('td', { class: 'r line-amount' }, money2(q.total)))];
-
+function totalsRows(q, totalLabel) {
   const totals = [];
   if (q.detailed) {
     totals.push(row('Sous-total', money2(q.subtotal)));
@@ -41,6 +43,46 @@ function documentView(q, b, { label = 'Soumission', dates = [], totalLabel = nul
     }
   }
   totals.push(row(totalLabel || (q.detailed && q.taxes ? 'Total, taxes incluses' : 'Total'), money2(q.total), 'is-total'));
+  return totals;
+}
+
+function refreshChoice(q) {
+  const t = liveTotals(q);
+  const dl = document.getElementById('docTotals');
+  if (dl) dl.replaceChildren(...totalsRows(t));
+  q.items.forEach((it, i) => {
+    const tr = document.getElementById(`opt-row-${i}`);
+    if (tr) tr.classList.toggle('is-off', !chosen.has(i));
+  });
+  const amount = document.getElementById('acceptAmount');
+  if (amount) amount.textContent = money2(t.total);
+}
+
+function row(label, value, cls = '') {
+  return h('div', { class: `total-row ${cls}` }, h('dt', {}, label), h('dd', { class: 'num' }, value));
+}
+
+function documentView(q, b, { label = 'Soumission', dates = [], totalLabel = null, partyLabel = 'Préparée pour' } = {}) {
+  const contact = [b.contact, b.phone, b.email, b.address].filter(Boolean);
+  const choosing = canChoose(q);
+  const lines = q.detailed
+    ? q.items.map((it, i) => h('tr', { id: it.optional ? `opt-row-${i}` : null, class: it.optional && choosing && !chosen.has(i) ? 'is-off' : null },
+      h('td', { class: 'desc' },
+        it.optional && choosing
+          ? h('label', { class: 'opt-choice' },
+            h('input', { type: 'checkbox', checked: chosen.has(i), 'aria-label': `Ajouter l’option : ${it.description}`,
+              onChange: (ev) => { if (ev.target.checked) chosen.add(i); else chosen.delete(i); refreshChoice(q); } }),
+            'Option, à ajouter si vous le souhaitez')
+          : (it.optional ? h('span', { class: 'opt-tag' }, 'Option retenue') : null),
+        it.optional ? h('br') : null,
+        it.description),
+      h('td', { class: 'r qty' }, `${fmtQty.format(it.qty)}${it.unit ? ` ${it.unit}` : ''}`),
+      h('td', { class: 'r unit-price' }, money2(it.unitPrice)),
+      h('td', { class: 'r line-amount' }, money2(it.total))))
+    : [h('tr', {}, h('td', { class: 'desc' }, q.project), h('td', { class: 'r qty' }, '1'),
+      h('td', { class: 'r unit-price' }, money2(q.total)), h('td', { class: 'r line-amount' }, money2(q.total)))];
+
+  const totals = totalsRows(choosing ? liveTotals(q) : q, totalLabel);
 
   const taxNums = [b.gstNumber && `N° de TPS : ${b.gstNumber}`, b.qstNumber && `N° de TVQ : ${b.qstNumber}`].filter(Boolean);
 
@@ -64,7 +106,8 @@ function documentView(q, b, { label = 'Soumission', dates = [], totalLabel = nul
         h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Description'), h('th', { scope: 'col', class: 'r' }, 'Qté'),
           h('th', { scope: 'col', class: 'r' }, 'Prix unitaire'), h('th', { scope: 'col', class: 'r' }, 'Montant'))),
         h('tbody', {}, lines))),
-    h('dl', { class: 'doc-totals' }, totals),
+    choosing ? h('p', { class: 'fine' }, 'Cochez les options qui vous intéressent : le total et les taxes se mettent à jour.') : null,
+    h('dl', { class: 'doc-totals', id: 'docTotals', 'aria-live': 'polite' }, totals),
     q.terms ? h('section', { class: 'doc-terms' }, h('h2', {}, 'Conditions'), h('p', {}, q.terms)) : null,
     taxNums.length ? h('div', { class: 'doc-taxnums' }, taxNums.map((t) => h('p', {}, t))) : null);
 }
@@ -121,13 +164,14 @@ function decisionView(data) {
       ev.preventDefault();
       if (nameInput.value.trim().length < 2) { errorBox.textContent = 'Inscrivez votre nom complet.'; errorBox.hidden = false; nameInput.focus(); return; }
       if (!confirmBox.checked) { errorBox.textContent = 'Cochez la case pour confirmer votre acceptation.'; errorBox.hidden = false; confirmBox.focus(); return; }
-      decide({ decision: 'accept', name: nameInput.value, confirm: true }, acceptBtn);
+      decide({ decision: 'accept', name: nameInput.value, confirm: true, options: [...chosen] }, acceptBtn);
     },
   },
   errorBox,
   h('div', { class: 'field' }, h('label', { for: 'd-name' }, 'Votre nom complet'), nameInput),
   h('label', { class: 'check' }, confirmBox,
-    h('span', {}, `J’accepte cette soumission de ${b.name} au montant de ${money2(q.total)} et j’autorise l’entreprise à me contacter pour planifier les travaux.`)),
+    h('span', {}, `J’accepte cette soumission de ${b.name} au montant de `, h('span', { id: 'acceptAmount' }, money2(canChoose(q) ? liveTotals(q).total : q.total)),
+      `${hasOptions(q) ? ', options choisies incluses,' : ''} et j’autorise l’entreprise à me contacter pour planifier les travaux.`)),
   acceptBtn);
 
   const refuseForm = h('form', {

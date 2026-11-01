@@ -36,17 +36,19 @@ export function lineCents(qtyMilli, unitCents) {
 }
 
 /**
- * lines : [{ qtyMilli, unitCents }] déjà validées.
+ * lines : [{ qtyMilli, unitCents, excluded? }] déjà validées. Une ligne « excluded » (option non choisie)
+ * garde son montant de ligne mais ne compte pas dans le sous-total.
  * TPS et TVQ se calculent chacune sur le montant après rabais (la TVQ ne s'applique pas sur la TPS).
  */
 export function computeTotals(lines, discountCents = 0, taxes = false) {
   const lineTotals = lines.map((l) => lineCents(l.qtyMilli, l.unitCents));
-  const subtotalCents = lineTotals.reduce((a, b) => a + b, 0);
+  const subtotalCents = lineTotals.reduce((sum, cents, i) => (lines[i].excluded ? sum : sum + cents), 0);
+  const optionsCents = lineTotals.reduce((sum, cents, i) => (lines[i].excluded ? sum + cents : sum), 0);
   if (discountCents < 0 || discountCents > subtotalCents) return { error: 'discount' };
   const taxable = subtotalCents - discountCents;
   const gstCents = taxes ? Math.round((taxable * GST_PPM) / 1_000_000) : 0;
   const qstCents = taxes ? Math.round((taxable * QST_PPM) / 1_000_000) : 0;
   const totalCents = taxable + gstCents + qstCents;
   if (totalCents > MAX_CENTS) return { error: 'total' };
-  return { lineTotals, subtotalCents, discountCents, gstCents, qstCents, totalCents };
+  return { lineTotals, subtotalCents, optionsCents, discountCents, gstCents, qstCents, totalCents };
 }

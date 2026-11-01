@@ -549,3 +549,16 @@ dialog.sheet::backdrop { background: rgba(16, 27, 38, .55); }
 .pay-status { font-weight: 700; }
 .pay-instructions { white-space: pre-line; font-weight: 600; font-size: var(--step-1); }
 .line-tools .hint { font-size: var(--step--1); color: var(--muted); }
+
+.save-row { align-items: center; }
+.saved-note { font-weight: 700; color: var(--go); font-size: var(--step--1); }
+
+/* Options (upsell) */
+.line-opt { font-size: var(--step--1); font-weight: 600; color: var(--muted); }
+.total-row.is-options dt, .total-row.is-options dd { color: var(--go); font-weight: 700; }
+.opt-choice { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 4px; font-weight: 700; color: var(--go); cursor: pointer; }
+.opt-choice input { width: 22px; height: 22px; accent-color: var(--go); }
+.doc-lines tr.is-off td { color: var(--muted); }
+.doc-lines tr.is-off .line-amount { text-decoration: line-through; }
+.opt-tag { display: inline-block; font-size: 0.75rem; font-weight: 800; color: var(--go); margin-bottom: 2px; }
+@media print { .opt-choice input { display: none; } }
