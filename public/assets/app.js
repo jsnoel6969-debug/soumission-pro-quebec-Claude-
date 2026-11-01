@@ -3,8 +3,9 @@ import {
   h, toast, todayISO, addDays, daysBetween, dateLong, relDays, relTime, money, money2, moneyRound, fold, ordinal,
   copyText, download, toCsv, toJsonExport, normalizeImported, detectLocalQuotes, validateQuote,
 } from './utils.js';
-import { toCents, toQtyMilli, computeTotals, lineCents } from './money.js';
-import { buildMessage, mailtoHref, smsHref, suggestedNextDays } from './templates.js';
+import { createLineEditor, decimalText, emptyLine, toEditable } from './line-editor.js';
+import { buildMessage, buildInvoiceMessage, mailtoHref, smsHref, suggestedNextDays } from './templates.js';
+import { createInvoicesUI } from './invoices-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -20,13 +21,15 @@ const state = {
   search: '',
   editingId: null,
   followUpTouched: false,
-  followId: null,
   channel: 'email',
   detailed: false,
   lines: [],
   sendMode: false,
   announcements: [],
   lastRefresh: 0,
+  invoices: [],
+  view: location.hash === '#factures' ? 'invoices' : 'quotes',
+  msg: null,
 };
 
 const isDemo = () => state.store && state.store.mode === 'demo';
@@ -56,6 +59,7 @@ async function boot() {
   }
   try {
     await reload();
+    await invoicesUI.load();
   } catch (err) {
     $('loading').textContent = err.message;
     return;
@@ -65,6 +69,7 @@ async function boot() {
   $('newBtn').hidden = false;
   announceDecisions();
   render();
+  setView(state.view);
   handleReturnParams();
 }
 
@@ -162,7 +167,19 @@ function viewTag(q) {
 }
 
 // =============== Rendu ===============
+function setView(view) {
+  state.view = view;
+  const inv = view === 'invoices';
+  $('quotesView').hidden = inv;
+  $('invoicesView').hidden = !inv;
+  $('tab-quotes').setAttribute('aria-selected', String(!inv));
+  $('tab-invoices').setAttribute('aria-selected', String(inv));
+  $('newBtn').hidden = inv;
+  try { history.replaceState(null, '', `${location.pathname}${location.search}${inv ? '#factures' : ''}`); } catch { /* aperçu */ }
+}
+
 function render() {
+  invoicesUI.renderView();
   renderPlan();
   renderBanners();
   renderStats();
@@ -210,7 +227,9 @@ function renderBanners() {
       ? `${q.decidedByName || q.client} a accepté « ${q.project} » en ligne (${money2(q.amount)}). Appelle pour planifier les travaux.`
       : `${q.client} a refusé « ${q.project} » en ligne.${q.clientMessage ? ` Raison : « ${q.clientMessage} »` : ''}`;
     out.push(banner(q.status === 'accepted' ? 'go' : '', text, [
-      h('button', { class: 'btn btn-ink btn-sm', type: 'button', onClick: () => { dismiss(); openQuote(q.id); } }, 'Voir la soumission'),
+      q.status === 'accepted'
+        ? h('button', { class: 'btn btn-ink btn-sm', type: 'button', onClick: () => { dismiss(); invoicesUI.createFromQuote(q.id).then(() => setView('invoices')); } }, 'Créer la facture')
+        : h('button', { class: 'btn btn-ink btn-sm', type: 'button', onClick: () => { dismiss(); openQuote(q.id); } }, 'Voir la soumission'),
       h('button', { class: 'btn btn-quiet btn-sm', type: 'button', onClick: dismiss }, 'OK'),
     ]));
   }
@@ -334,10 +353,6 @@ const FIELDS = ['client', 'project', 'amount', 'status', 'sentOn', 'followUpOn',
   'discount', 'validUntil', 'clientAddress', 'terms'];
 const DETAIL_ONLY = ['discount', 'validUntil', 'clientAddress', 'terms'];
 
-const decimalText = (n) => (n === null || n === undefined || n === '' ? '' : String(n).replace('.', ','));
-const emptyLine = () => ({ description: '', qty: '1', unit: '', unitPrice: '' });
-const lineIsBlank = (l) => !String(l.description).trim() && !String(l.unitPrice).trim() && (!String(l.qty).trim() || String(l.qty).trim() === '1');
-
 function businessDefaults() {
   const b = state.me && state.me.user && state.me.user.business;
   return { taxes: b ? b.chargeTaxes : true, terms: b ? b.defaultTerms : '' };
@@ -370,96 +385,30 @@ function showFieldError(form, field, message) {
   if (input) input.focus();
 }
 
+// Éditeur de lignes de la soumission (créé au démarrage, voir wireStatic).
+let quoteLines = null;
+
 function setDetailed(on, { seedFromAmount = false } = {}) {
   const form = $('quoteForm');
-  if (on && seedFromAmount && !state.lines.length) {
+  if (on && seedFromAmount && !quoteLines.lines.length) {
     const amount = form.elements.amount.value.trim();
-    state.lines = [amount
+    quoteLines.set([amount
       ? { description: form.elements.project.value.trim() || 'Travaux', qty: '1', unit: 'forfait', unitPrice: amount }
-      : emptyLine()];
+      : emptyLine()]);
   }
   if (!on && state.detailed) {
     // Retour au montant simple : le total calculé devient le montant.
-    const t = currentTotals();
+    const t = quoteLines.totals();
     if (t && !t.error && t.totalCents) form.elements.amount.value = decimalText((t.totalCents / 100).toFixed(2));
   }
   state.detailed = on;
-  if (on && !state.lines.length) state.lines = [emptyLine()];
+  quoteLines.setActive(on);
+  if (on) quoteLines.ensureOne();
   $('detailBox').hidden = !on;
   $('detailHint').hidden = on;
   $('detailToggle').setAttribute('aria-expanded', String(on));
   $('detailToggle').textContent = on ? 'Revenir à un montant simple' : 'Détailler avec lignes et TPS/TVQ';
   form.querySelector('[data-field="amount"]').hidden = on;
-  renderLines();
-  updateTotals();
-}
-
-function renderLines() {
-  const writable = canWrite();
-  $('lines').replaceChildren(...state.lines.map((line, i) => {
-    const n = i + 1;
-    const input = (key, attrs = {}) => {
-      const el = h('input', { class: `input ${attrs.num ? 'num' : ''}`, id: `line-${key}-${i}`, autocomplete: 'off',
-        inputmode: attrs.num ? 'decimal' : null, placeholder: attrs.placeholder || null, maxlength: attrs.max || null, disabled: !writable });
-      el.value = line[key] ?? '';
-      el.addEventListener('input', () => { line[key] = el.value; updateTotals(); });
-      return el;
-    };
-    return h('div', { class: 'line' },
-      h('div', { class: 'field line-desc' },
-        h('label', { for: `line-description-${i}` }, `Ligne ${n}`),
-        input('description', { placeholder: 'Description des travaux ou du matériel', max: '250' })),
-      h('div', { class: 'line-nums' },
-        h('div', { class: 'field' }, h('label', { for: `line-qty-${i}` }, 'Qté'), input('qty', { num: true })),
-        h('div', { class: 'field' }, h('label', { for: `line-unit-${i}` }, 'Unité'), input('unit', { placeholder: 'h, pi²', max: '12' })),
-        h('div', { class: 'field' }, h('label', { for: `line-unitPrice-${i}` }, 'Prix unitaire'), input('unitPrice', { num: true, placeholder: '0,00' })),
-        h('div', { class: 'line-total' }, h('span', { class: 'label' }, 'Montant'), h('span', { class: 'num', id: `line-total-${i}` }, '—'))),
-      writable && state.lines.length > 1
-        ? h('button', { class: 'btn btn-quiet btn-sm line-remove', type: 'button', onClick: () => { state.lines.splice(i, 1); renderLines(); updateTotals(); } }, `Retirer la ligne ${n}`)
-        : null);
-  }));
-}
-
-function addLine(preset = {}) {
-  const last = state.lines[state.lines.length - 1];
-  const line = { ...emptyLine(), ...preset };
-  if (last && lineIsBlank(last)) state.lines[state.lines.length - 1] = line;
-  else state.lines.push(line);
-  renderLines();
-  updateTotals();
-  const i = state.lines.length - 1;
-  const focus = $(preset.description ? `line-unitPrice-${i}` : `line-description-${i}`);
-  if (focus) focus.focus();
-}
-
-function currentTotals() {
-  const form = $('quoteForm');
-  const calc = state.lines.map((l) => ({ qtyMilli: toQtyMilli(l.qty) ?? 0, unitCents: toCents(l.unitPrice) ?? 0 }));
-  const discountCents = toCents(form.elements.discount.value || '0') ?? 0;
-  return { ...computeTotals(calc, discountCents, form.elements.taxes.checked), calc };
-}
-
-function updateTotals() {
-  if (!state.detailed) return;
-  const t = currentTotals();
-  t.calc.forEach((l, i) => {
-    const el = $(`line-total-${i}`);
-    if (el) el.textContent = l.qtyMilli && l.unitCents ? money2(lineCents(l.qtyMilli, l.unitCents) / 100) : '—';
-  });
-  const row = (label, value, cls = '') => h('div', { class: `total-row ${cls}` }, h('dt', {}, label), h('dd', { class: 'num' }, value));
-  const rows = [];
-  if (t.error === 'discount') rows.push(h('div', { class: 'field-error' }, 'Le rabais dépasse le sous-total.'));
-  else if (t.error) rows.push(h('div', { class: 'field-error' }, 'Total trop élevé.'));
-  else {
-    rows.push(row('Sous-total', money2(t.subtotalCents / 100)));
-    if (t.discountCents) rows.push(row('Rabais', `− ${money2(t.discountCents / 100)}`));
-    if ($('quoteForm').elements.taxes.checked) {
-      rows.push(row('TPS (5 %)', money2(t.gstCents / 100)));
-      rows.push(row('TVQ (9,975 %)', money2(t.qstCents / 100)));
-    }
-    rows.push(row('Total', money2(t.totalCents / 100), 'is-total'));
-  }
-  $('totals').replaceChildren(...rows);
 }
 
 function openQuote(id = null) {
@@ -479,9 +428,7 @@ function openQuote(id = null) {
   if (q && !q.detailed && !q.terms) values.terms = defaults.terms;
   for (const f of FIELDS) form.elements[f].value = values[f] ?? '';
   form.elements.taxes.checked = q && q.detailed ? q.taxes : defaults.taxes;
-  state.lines = q && q.detailed
-    ? q.items.map((it) => ({ description: it.description, qty: decimalText(it.qty), unit: it.unit || '', unitPrice: decimalText(it.unitPrice) }))
-    : [];
+  quoteLines.set(q && q.detailed ? toEditable(q.items) : []);
   state.detailed = false;
   setDetailed(Boolean(q && q.detailed));
 
@@ -493,6 +440,9 @@ function openQuote(id = null) {
   $('saveQuote').hidden = !writable;
   $('saveSend').hidden = !(writable && !isDemo() && (!q || q.status === 'pending'));
   $('deleteQuote').hidden = !(q && writable);
+  const existingInvoice = q ? invoicesUI.invoiceFor(q.id) : null;
+  $('makeInvoice').hidden = !(q && (existingInvoice || (q.status !== 'refused' && (writable || isDemo()))));
+  $('makeInvoice').textContent = existingInvoice ? `Voir la facture n° ${existingInvoice.number}` : 'Créer la facture';
   if (!writable) {
     $('quoteError').textContent = 'Lecture seule : active ton abonnement pour modifier tes soumissions.';
     $('quoteError').hidden = false;
@@ -514,10 +464,7 @@ function formData() {
   const data = Object.fromEntries(FIELDS.map((f) => [f, form.elements[f].value]));
   data.followUpOn = data.followUpOn || null;
   if (state.detailed) {
-    state.lines = state.lines.filter((l) => !lineIsBlank(l));
-    renderLines();
-    updateTotals();
-    data.items = state.lines.map((l) => ({ description: l.description, qty: l.qty, unit: l.unit, unitPrice: l.unitPrice }));
+    data.items = quoteLines.cleaned();
     data.taxes = form.elements.taxes.checked;
     data.validUntil = data.validUntil || null;
   } else {
@@ -535,8 +482,7 @@ async function saveQuote(event) {
   const sendAfter = Boolean(event.submitter && event.submitter.dataset.send);
   const data = formData();
   if (state.detailed && !data.items.length) {
-    if (!state.lines.length) state.lines = [emptyLine()];
-    renderLines();
+    quoteLines.ensureOne();
     showFieldError(form, 'items.0.description', 'Ajoute au moins une ligne, ou reviens à un montant simple.');
     return;
   }
@@ -653,7 +599,7 @@ async function unshare(id) {
   } catch (e) { handleError(e); }
 }
 
-// =============== Relance et envoi ===============
+// =============== Messages : relance, envoi, rappel de paiement ===============
 const NEXT_OPTIONS = [[3, 'Dans 3 jours'], [7, 'Dans 7 jours'], [14, 'Dans 14 jours'], [0, 'Aucune']];
 
 function signer() {
@@ -662,50 +608,74 @@ function signer() {
   return { displayName: u.displayName, company: u.company, phone: u.business ? u.business.businessPhone : '' };
 }
 
+/** Destinataire du message en cours : une soumission ou une facture. */
+function msgTarget() {
+  const m = state.msg;
+  if (!m) return null;
+  return m.type === 'invoice' ? invoicesUI.find(m.id) : state.quotes.find((x) => x.id === m.id);
+}
+
 function openFollow(id, { send = false } = {}) {
-  const q = state.quotes.find((x) => x.id === id);
-  if (!q) return;
-  state.followId = id;
-  state.sendMode = send;
-  state.channel = q.clientPhone && !q.clientEmail ? 'sms' : 'email';
-  const count = q.followUpCount || 0;
-  const ago = daysBetween(q.sentOn, todayISO());
-  $('followTitle').textContent = send ? `Envoyer à ${q.client}` : `Relancer ${q.client}`;
-  $('followContext').textContent = send
-    ? `« ${q.project} », ${money2(q.amount)}. Ton client pourra la consulter et l’accepter en ligne.`
-    : `« ${q.project} », ${money(q.amount)}. Envoyée ${relDays(-ago)}. Ce sera ta ${ordinal(count + 1)} relance.${q.viewCount ? ` Ouverte ${q.viewCount} fois, ${relTime(q.lastViewedAt)}.` : ''}`;
-  const suggested = suggestedNextDays(count);
-  $('nextChips').replaceChildren(...NEXT_OPTIONS.map(([days, label]) => h('label', {},
-    h('input', { type: 'radio', name: 'nextDays', value: String(days), checked: days === suggested }),
-    h('span', {}, label))));
-  $('doneBox').hidden = send;
-  $('sendDoneRow').hidden = !send;
+  openMessage({ type: 'quote', id, kind: send ? 'send' : 'follow' });
+}
+
+function openMessage(m) {
+  state.msg = m;
+  const t = msgTarget();
+  if (!t) return;
+  state.channel = t.clientPhone && !t.clientEmail ? 'sms' : 'email';
+  const isQuote = m.type === 'quote';
+  if (isQuote) {
+    const count = t.followUpCount || 0;
+    const ago = daysBetween(t.sentOn, todayISO());
+    $('followTitle').textContent = m.kind === 'send' ? `Envoyer à ${t.client}` : `Relancer ${t.client}`;
+    $('followContext').textContent = m.kind === 'send'
+      ? `« ${t.project} », ${money2(t.amount)}. Ton client pourra la consulter et l’accepter en ligne.`
+      : `« ${t.project} », ${money(t.amount)}. Envoyée ${relDays(-ago)}. Ce sera ta ${ordinal(count + 1)} relance.${t.viewCount ? ` Ouverte ${t.viewCount} fois, ${relTime(t.lastViewedAt)}.` : ''}`;
+    const suggested = suggestedNextDays(count);
+    $('nextChips').replaceChildren(...NEXT_OPTIONS.map(([days, label]) => h('label', {},
+      h('input', { type: 'radio', name: 'nextDays', value: String(days), checked: days === suggested }),
+      h('span', {}, label))));
+  } else {
+    $('followTitle').textContent = m.kind === 'reminder' ? `Rappel de paiement à ${t.client}` : `Envoyer la facture à ${t.client}`;
+    $('followContext').textContent = `Facture n° ${t.number}, ${money2(t.total)}, payable d’ici le ${dateLong(t.dueOn)}.${t.viewCount ? ` Ouverte ${t.viewCount} fois, ${relTime(t.lastViewedAt)}.` : ''}`;
+  }
+  const followUp = isQuote && m.kind === 'follow';
+  $('doneBox').hidden = !followUp;
+  $('sendDoneRow').hidden = followUp;
+  $('sendDone').hidden = m.kind === 'reminder';
+  $('reminderDone').hidden = m.kind !== 'reminder';
   $('markDone').disabled = !canWrite();
   renderFollowMessage();
-  $('followDialog').showModal();
+  if (!$('followDialog').open) $('followDialog').showModal();
 }
 
 function renderFollowMessage() {
-  const q = state.quotes.find((x) => x.id === state.followId);
-  if (!q) return;
+  const t = msgTarget();
+  if (!t) return;
   document.querySelectorAll('[data-channel]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.channel === state.channel)));
-  const msg = buildMessage(q, { channel: state.channel, signer: signer(), link: linkUrl(q), kind: state.sendMode ? 'send' : 'follow' });
+  const msg = state.msg.type === 'invoice'
+    ? buildInvoiceMessage(t, {
+      channel: state.channel, signer: signer(), link: invoicesUI.linkUrl(t), kind: state.msg.kind,
+      paymentInstructions: state.me && state.me.user.business ? state.me.user.business.paymentInstructions : '',
+    })
+    : buildMessage(t, { channel: state.channel, signer: signer(), link: linkUrl(t), kind: state.msg.kind === 'send' ? 'send' : 'follow' });
   $('followMessage').value = msg.body;
   $('followMessage').dataset.subject = msg.subject;
   updateSendLinks();
 }
 
 function updateSendLinks() {
-  const q = state.quotes.find((x) => x.id === state.followId);
-  if (!q) return;
+  const t = msgTarget();
+  if (!t) return;
   const body = $('followMessage').value;
   const mail = $('openMail');
   const sms = $('openSms');
-  mail.hidden = !(state.channel === 'email' && q.clientEmail);
-  sms.hidden = !(state.channel === 'sms' && q.clientPhone);
-  if (!mail.hidden) mail.href = mailtoHref(q.clientEmail, $('followMessage').dataset.subject || '', body);
-  if (!sms.hidden) sms.href = smsHref(q.clientPhone, body);
-  const missing = state.channel === 'email' ? !q.clientEmail : !q.clientPhone;
+  mail.hidden = !(state.channel === 'email' && t.clientEmail);
+  sms.hidden = !(state.channel === 'sms' && t.clientPhone);
+  if (!mail.hidden) mail.href = mailtoHref(t.clientEmail, $('followMessage').dataset.subject || '', body);
+  if (!sms.hidden) sms.href = smsHref(t.clientPhone, body);
+  const missing = state.channel === 'email' ? !t.clientEmail : !t.clientPhone;
   $('contactHint').hidden = !missing;
   $('contactHint').textContent = state.channel === 'email'
     ? 'Ajoute le courriel du client au dossier pour ouvrir le message directement dans ton application courriel.'
@@ -713,9 +683,19 @@ function updateSendLinks() {
 }
 
 function sendDone() {
-  const q = state.quotes.find((x) => x.id === state.followId);
+  const t = msgTarget();
   $('followDialog').close();
-  toast(q && q.followUpOn ? `Parfait. Relance prévue le ${dateLong(q.followUpOn)}, sauf si ton client accepte avant.` : 'Parfait.');
+  if (state.msg.type === 'invoice') {
+    toast(`Parfait. Tu verras ici quand ton client ouvrira la facture n° ${t.number}.`);
+    return;
+  }
+  toast(t && t.followUpOn ? `Parfait. Relance prévue le ${dateLong(t.followUpOn)}, sauf si ton client accepte avant.` : 'Parfait.');
+}
+
+async function reminderDone() {
+  const t = msgTarget();
+  $('followDialog').close();
+  if (t) await invoicesUI.recordReminder(t.id);
 }
 
 async function markFollowDone() {
@@ -726,7 +706,7 @@ async function markFollowDone() {
   const btn = $('markDone');
   btn.disabled = true;
   try {
-    const q = await state.store.followUp(state.followId, { doneOn: today, nextFollowUpOn: days ? addDays(today, days) : null });
+    const q = await state.store.followUp(state.msg.id, { doneOn: today, nextFollowUpOn: days ? addDays(today, days) : null });
     $('followDialog').close();
     await reload();
     render();
@@ -757,6 +737,7 @@ async function refreshQuotes() {
   state.lastRefresh = Date.now();
   try {
     await reload();
+    await invoicesUI.load();
     announceDecisions();
     render();
   } catch { /* hors ligne : on garde l'affichage actuel */ }
@@ -869,7 +850,8 @@ function openAccount() {
     h('div', { class: 'btn-row' },
       h('button', { class: 'btn btn-ghost on-paper btn-sm', type: 'button', onClick: exportCsv }, 'Exporter en CSV'),
       h('button', { class: 'btn btn-ghost on-paper btn-sm', type: 'button', onClick: exportJson }, 'Exporter en JSON'),
-      h('button', { class: 'btn btn-ghost on-paper btn-sm', type: 'button', onClick: () => $('importFile').click() }, 'Importer un fichier JSON')));
+      h('button', { class: 'btn btn-ghost on-paper btn-sm', type: 'button', onClick: () => $('importFile').click() }, 'Importer un fichier JSON'),
+      isDemo() ? null : h('button', { class: 'btn btn-ghost on-paper btn-sm', type: 'button', onClick: invoicesUI.exportCsv }, 'Exporter les factures (CSV)')));
 
   if (isDemo()) {
     body.replaceChildren(
@@ -912,6 +894,8 @@ function openAccount() {
     gstNumber: inp('acct-gst', biz.gstNumber, { max: '30', placeholder: '123456789 RT0001' }),
     qstNumber: inp('acct-qst', biz.qstNumber, { max: '30', placeholder: '1234567890 TQ0001' }),
     defaultTerms: inp('acct-terms', biz.defaultTerms, { textarea: true, max: '4000', placeholder: 'Ex. Paiement : 30 % à la signature, solde à la fin des travaux. Prix valides 30 jours.' }),
+    paymentInstructions: inp('acct-pay', biz.paymentInstructions, { textarea: true, max: '1000', placeholder: 'Ex. Virement Interac à paiement@monentreprise.ca, ou chèque à l’ordre de mon entreprise.' }),
+    invoiceDueDays: inp('acct-due', String(biz.invoiceDueDays ?? 30), { max: '3', inputmode: 'numeric' }),
   };
   const taxesBox = h('input', { type: 'checkbox', id: 'acct-taxes' });
   taxesBox.checked = biz.chargeTaxes !== false;
@@ -932,6 +916,7 @@ function openAccount() {
             businessPhone: v('businessPhone'), businessEmail: v('businessEmail'), businessAddress: v('businessAddress'),
             rbqNumber: v('rbqNumber'), gstNumber: v('gstNumber'), qstNumber: v('qstNumber'),
             chargeTaxes: taxesBox.checked, defaultTerms: v('defaultTerms'),
+            paymentInstructions: v('paymentInstructions'), invoiceDueDays: v('invoiceDueDays'),
           },
         } });
         render();
@@ -952,6 +937,8 @@ function openAccount() {
   h('div', { class: 'form-row' }, fieldWrap('N° de TPS', 'gstNumber'), fieldWrap('N° de TVQ', 'qstNumber')),
   h('label', { class: 'check check-box' }, taxesBox, h('span', {}, 'Ajouter TPS et TVQ par défaut à mes soumissions détaillées')),
   fieldWrap('Conditions par défaut', 'defaultTerms', 'Reprises sur chaque nouvelle soumission détaillée. Tu peux les modifier au cas par cas.'),
+  fieldWrap('Modalités de paiement', 'paymentInstructions', 'Affichées sur tes factures et dans les messages d’envoi.'),
+  fieldWrap('Délai de paiement des factures (jours)', 'invoiceDueDays'),
   h('div', {}, h('button', { class: 'btn btn-ink btn-sm', type: 'submit' }, 'Enregistrer le profil')));
 
   const pw = h('input', { class: 'input', type: 'password', id: 'acct-delete-pw', autocomplete: 'current-password' });
@@ -1015,14 +1002,25 @@ function wireStatic() {
   form.elements.status.addEventListener('change', updateFollowHint);
   $('deleteQuote').addEventListener('click', deleteQuote);
   $('detailToggle').addEventListener('click', () => setDetailed(!state.detailed, { seedFromAmount: true }));
-  $('addLine').addEventListener('click', () => addLine());
+  quoteLines = createLineEditor({
+    listEl: $('lines'), totalsEl: $('totals'), discountInput: form.elements.discount, taxesInput: form.elements.taxes,
+    idPrefix: 'line', isWritable: canWrite,
+  });
+  $('addLine').addEventListener('click', () => quoteLines.add());
   $('quickLines').addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-line]');
-    if (btn && canWrite()) addLine({ description: btn.dataset.line, unit: btn.dataset.unit || '' });
+    if (btn && canWrite()) quoteLines.add({ description: btn.dataset.line, unit: btn.dataset.unit || '' });
   });
-  form.elements.discount.addEventListener('input', updateTotals);
-  form.elements.taxes.addEventListener('change', updateTotals);
   $('sendDone').addEventListener('click', sendDone);
+  $('reminderDone').addEventListener('click', reminderDone);
+  $('makeInvoice').addEventListener('click', () => {
+    const id = state.editingId;
+    const existing = invoicesUI.invoiceFor(id);
+    $('quoteDialog').close();
+    if (existing) { setView('invoices'); invoicesUI.open(existing.id); } else invoicesUI.createFromQuote(id).then(() => setView('invoices'));
+  });
+  document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+  invoicesUI.wire();
   document.addEventListener('visibilitychange', refreshQuotes);
 
   document.querySelectorAll('[data-channel]').forEach((b) => b.addEventListener('click', () => {
@@ -1042,5 +1040,10 @@ function wireStatic() {
     await importFile(file);
   });
 }
+
+const invoicesUI = createInvoicesUI({
+  state, api, $, isDemo, canWrite, requireWrite, handleError, openMessage,
+  rerender: () => render(),
+});
 
 boot();

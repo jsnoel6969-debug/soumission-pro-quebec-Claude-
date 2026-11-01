@@ -1,4 +1,4 @@
-name = "soumission-pro-v2"   # Worker séparé : la prod actuelle et le staging ne sont pas touchés
+name = "soumission-pro-quebec-claude"   # Worker séparé : la prod actuelle et le staging ne sont pas touchés
 main = "src/index.js"
 compatibility_date = "2025-06-01"
 workers_dev = true
@@ -11,6 +11,10 @@ binding = "ASSETS"
 html_handling = "auto-trailing-slash"
 not_found_handling = "404-page"
 
+# Journaux et erreurs consultables dans Cloudflare → Worker → Observabilité (gratuit dans les limites du plan).
+[observability]
+enabled = true
+
 [[d1_databases]]
 binding = "DB"
 database_name = "soumission-pro"
@@ -18,7 +22,7 @@ database_id = "d5281064-4fb5-43ec-bce0-ab2359099bc1"   # créée le 31 oct. 2026
 migrations_dir = "migrations"
 
 [vars]
-APP_URL = "https://soumission-pro-v2.jsnoel6969.workers.dev"
+APP_URL = "https://soumission-pro-quebec-claude.jsnoel6969.workers.dev"
 TRIAL_DAYS = "14"
 FOUNDER_SEATS = "10"
 PRICE_MONTHLY_CENTS = "2900"          # doit correspondre au prix Stripe (affichage + MRR)

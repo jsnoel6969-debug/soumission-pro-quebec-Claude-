@@ -4,6 +4,9 @@ import { h, money2 } from './utils.js';
 
 const root = document.getElementById('root');
 const token = location.pathname.split('/').filter(Boolean).pop() || '';
+// /s/… = soumission, /f/… = facture : même document, réponses différentes.
+const KIND = location.pathname.startsWith('/f/') ? 'invoice' : 'quote';
+const ENDPOINT = KIND === 'invoice' ? '/api/public/invoices/' : '/api/public/quotes/';
 const fmtDate = new Intl.DateTimeFormat('fr-CA', { day: 'numeric', month: 'long', year: 'numeric' });
 const fmtQty = new Intl.NumberFormat('fr-CA', { maximumFractionDigits: 3 });
 const dateText = (iso) => {
@@ -17,7 +20,7 @@ function row(label, value, cls = '') {
   return h('div', { class: `total-row ${cls}` }, h('dt', {}, label), h('dd', { class: 'num' }, value));
 }
 
-function documentView(q, b) {
+function documentView(q, b, { label = 'Soumission', dates = [], totalLabel = null, partyLabel = 'Préparée pour' } = {}) {
   const contact = [b.contact, b.phone, b.email, b.address].filter(Boolean);
   const lines = q.detailed
     ? q.items.map((it) => h('tr', {},
@@ -37,7 +40,7 @@ function documentView(q, b) {
       totals.push(row('TVQ (9,975 %)', money2(q.qst)));
     }
   }
-  totals.push(row(q.detailed && q.taxes ? 'Total, taxes incluses' : 'Total', money2(q.total), 'is-total'));
+  totals.push(row(totalLabel || (q.detailed && q.taxes ? 'Total, taxes incluses' : 'Total'), money2(q.total), 'is-total'));
 
   const taxNums = [b.gstNumber && `N° de TPS : ${b.gstNumber}`, b.qstNumber && `N° de TVQ : ${b.qstNumber}`].filter(Boolean);
 
@@ -49,13 +52,12 @@ function documentView(q, b) {
         contact.length ? h('div', { class: 'contact' }, contact.map((c) => h('p', {}, c))) : null,
         b.rbq ? h('p', { class: 'contact' }, `Licence RBQ : ${b.rbq}`) : null),
       h('div', { class: 'doc-meta' },
-        h('p', { class: 'doc-kind' }, 'Soumission'),
+        h('p', { class: 'doc-kind' }, label),
         h('dl', {},
           q.number ? h('div', {}, h('dt', {}, 'N°'), h('dd', { class: 'num' }, q.number)) : null,
-          h('div', {}, h('dt', {}, 'Date'), h('dd', {}, dateText(q.sentOn))),
-          q.validUntil ? h('div', {}, h('dt', {}, 'Valide jusqu’au'), h('dd', {}, dateText(q.validUntil))) : null))),
+          dates.filter(([, iso]) => iso).map(([dt, iso]) => h('div', {}, h('dt', {}, dt), h('dd', {}, dateText(iso))))))),
     h('section', { class: 'doc-parties' },
-      h('div', {}, h('h2', {}, 'Préparée pour'), h('p', {}, q.client), q.clientAddress ? h('p', {}, q.clientAddress) : null),
+      h('div', {}, h('h2', {}, partyLabel), h('p', {}, q.client), q.clientAddress ? h('p', {}, q.clientAddress) : null),
       h('div', {}, h('h2', {}, 'Projet'), h('p', {}, q.project))),
     h('div', { class: 'table-scroll' },
       h('table', { class: 'doc-lines' },
@@ -102,7 +104,7 @@ function decisionView(data) {
     errorBox.hidden = true;
     btn.disabled = true;
     try {
-      const fresh = await api(`/api/public/quotes/${encodeURIComponent(token)}/decision`, { method: 'POST', body });
+      const fresh = await api(`${ENDPOINT}${encodeURIComponent(token)}/decision`, { method: 'POST', body });
       render(fresh);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
@@ -146,12 +148,53 @@ function decisionView(data) {
     h('p', { class: 'fine' }, 'Votre acceptation en ligne confirme votre accord avec cette soumission. Elle ne remplace pas un contrat écrit lorsque la loi en exige un.'));
 }
 
+function invoiceBanner(f, b, viewer) {
+  if (viewer.isOwner) {
+    return h('p', { class: 'doc-state is-owner' }, 'Aperçu : voici ce que ton client voit. Tes visites ne comptent pas comme des ouvertures.');
+  }
+  if (f.status === 'paid') return h('p', { class: 'doc-state is-go' }, `Facture payée le ${dateText(f.paidOn)}. Merci!`);
+  if (f.status === 'void') return h('p', { class: 'doc-state is-stop' }, `Cette facture a été annulée. Communiquez avec ${b.name} pour toute question.`);
+  if (f.overdue) return h('p', { class: 'doc-state is-warn' }, `Cette facture était payable le ${dateText(f.dueOn)}.`);
+  return null;
+}
+
+function paymentView(f, b) {
+  if (f.status !== 'unpaid') return null;
+  return h('section', { class: 'slip decision', 'aria-labelledby': 'payTitle' },
+    h('span', { class: 'slip-perf', 'aria-hidden': 'true' }),
+    h('h2', { id: 'payTitle' }, 'Comment payer'),
+    h('p', { class: 'lede' }, `${money2(f.total)} à payer d’ici le ${dateText(f.dueOn)}.`),
+    b.paymentInstructions
+      ? h('p', { class: 'pay-instructions' }, b.paymentInstructions)
+      : h('p', {}, `Communiquez avec ${b.name}${b.phone ? ` au ${b.phone}` : ''} pour les modalités de paiement.`),
+    h('p', { class: 'fine' }, `Indiquez le numéro de facture ${f.number} avec votre paiement.`));
+}
+
+function renderInvoice(data) {
+  const { invoice: f, business: b, viewer } = data;
+  document.title = `Facture ${f.number} | ${b.name}`;
+  root.replaceChildren(...[
+    invoiceBanner(f, b, viewer),
+    documentView(f, b, {
+      label: 'Facture',
+      dates: [['Date', f.issuedOn], ['Payable d’ici le', f.status === 'unpaid' ? f.dueOn : null]],
+      totalLabel: f.status === 'unpaid' ? 'Total à payer' : 'Total',
+      partyLabel: 'Facturée à',
+    }),
+    paymentView(f, b),
+    h('div', { class: 'doc-actions' },
+      h('button', { class: 'btn btn-ink', type: 'button', onClick: () => window.print() }, 'Imprimer ou enregistrer en PDF'),
+      h('p', { class: 'powered' }, 'Facture envoyée avec ', h('a', { href: '/?ref=lien-client' }, 'Soumission Pro'))),
+  ].filter(Boolean));
+}
+
 function render(data) {
+  if (KIND === 'invoice') { renderInvoice(data); return; }
   const { quote: q, business: b, viewer } = data;
   document.title = `Soumission${q.number ? ` ${q.number}` : ''} | ${b.name}`;
   root.replaceChildren(...[
     stateBanner(q, b, viewer),
-    documentView(q, b),
+    documentView(q, b, { dates: [['Date', q.sentOn], ['Valide jusqu’au', q.validUntil]] }),
     decisionView(data),
     h('div', { class: 'doc-actions' },
       h('button', { class: 'btn btn-ink', type: 'button', onClick: () => window.print() }, 'Imprimer ou enregistrer en PDF'),
@@ -161,12 +204,13 @@ function render(data) {
 
 async function load() {
   try {
-    render(await api(`/api/public/quotes/${encodeURIComponent(token)}`));
+    render(await api(`${ENDPOINT}${encodeURIComponent(token)}`));
   } catch (err) {
-    document.title = 'Soumission introuvable';
+    const what = KIND === 'invoice' ? 'Facture introuvable' : 'Soumission introuvable';
+    document.title = what;
     root.replaceChildren(h('article', { class: 'slip doc' },
       h('span', { class: 'slip-perf', 'aria-hidden': 'true' }),
-      h('h1', {}, 'Soumission introuvable'),
+      h('h1', {}, what),
       h('p', {}, err.message)));
   }
 }

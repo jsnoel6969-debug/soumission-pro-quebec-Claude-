@@ -33,6 +33,12 @@
       <p class="loading" id="loading">Chargement de tes soumissions…</p>
 
       <div id="content" hidden>
+        <div class="view-tabs" role="tablist" aria-label="Sections">
+          <button type="button" role="tab" id="tab-quotes" aria-controls="quotesView" aria-selected="true" data-view="quotes">Soumissions</button>
+          <button type="button" role="tab" id="tab-invoices" aria-controls="invoicesView" aria-selected="false" data-view="invoices">Factures <span class="tab-count num" id="invTabCount"></span></button>
+        </div>
+
+        <div id="quotesView" role="tabpanel" aria-labelledby="tab-quotes">
         <dl class="stats" id="stats"></dl>
 
         <section class="block" aria-labelledby="dueTitle">
@@ -60,6 +66,26 @@
           </div>
           <div class="list rows" id="allList"></div>
         </section>
+
+        </div>
+
+        <div id="invoicesView" role="tabpanel" aria-labelledby="tab-invoices" hidden>
+          <dl class="stats" id="invStats"></dl>
+          <section class="block" aria-labelledby="invDueTitle">
+            <div class="block-head">
+              <h2 id="invDueTitle">À encaisser</h2>
+              <span class="count num" id="invDueCount"></span>
+            </div>
+            <div class="list list-due" id="invDueList"></div>
+          </section>
+          <section class="block" aria-labelledby="invAllTitle">
+            <div class="block-head">
+              <h2 id="invAllTitle">Toutes les factures</h2>
+              <span class="count num" id="invAllCount"></span>
+            </div>
+            <div class="list rows" id="invList"></div>
+          </section>
+        </div>
 
         <p class="foot-note">Les dates de relance sont des rappels. Soumission Pro ne contacte jamais tes clients : c'est toi qui envoies.</p>
       </div>
@@ -171,10 +197,93 @@
       </div>
       <div class="sheet-foot">
         <button class="btn btn-quiet" type="button" id="deleteQuote" hidden>Supprimer</button>
+        <button class="btn btn-ghost on-paper" type="button" id="makeInvoice" hidden>Créer la facture</button>
         <span class="grow"></span>
         <button class="btn btn-ghost on-paper" type="button" data-close>Annuler</button>
         <button class="btn btn-ghost on-paper" type="submit" id="saveQuote">Enregistrer</button>
         <button class="btn btn-ink" type="submit" id="saveSend" data-send="1" hidden>Enregistrer et envoyer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Facture -->
+  <dialog class="sheet" id="invoiceDialog" aria-labelledby="invoiceTitle">
+    <form id="invoiceForm" novalidate>
+      <div class="sheet-head">
+        <h2 id="invoiceTitle">Facture</h2>
+        <button class="close-x" type="button" data-close aria-label="Fermer">×</button>
+      </div>
+      <div class="sheet-body">
+        <div class="alert alert-error" id="invoiceError" role="alert" hidden></div>
+        <section class="pay-box" id="payBox" aria-live="polite"></section>
+        <div class="form-row">
+          <div class="field" data-field="client">
+            <label for="i-client">Client</label>
+            <input class="input" id="i-client" name="client" maxlength="120" autocomplete="off">
+          </div>
+          <div class="field" data-field="project">
+            <label for="i-project">Projet</label>
+            <input class="input" id="i-project" name="project" maxlength="160" autocomplete="off">
+          </div>
+        </div>
+        <fieldset class="detail" id="invDetail">
+          <legend>Lignes de la facture</legend>
+          <div class="lines" id="invLines"></div>
+          <div class="line-tools">
+            <button class="btn btn-ink btn-sm" type="button" id="invAddLine">Ajouter une ligne</button>
+            <span class="hint">Ajoute ici les extras faits pendant les travaux.</span>
+          </div>
+          <div class="form-row">
+            <div class="field" data-field="discount">
+              <label for="i-discount">Rabais ($)</label>
+              <input class="input num" id="i-discount" name="discount" inputmode="decimal" autocomplete="off" placeholder="0">
+            </div>
+            <div class="field">
+              <span class="label">Taxes</span>
+              <label class="check check-box"><input type="checkbox" id="i-taxes" name="taxes"><span>Ajouter TPS 5 % et TVQ 9,975 %</span></label>
+            </div>
+          </div>
+          <dl class="totals" id="invTotals"></dl>
+        </fieldset>
+        <div class="form-row">
+          <div class="field" data-field="issuedOn">
+            <label for="i-issuedOn">Date de facture</label>
+            <input class="input" id="i-issuedOn" name="issuedOn" type="date">
+          </div>
+          <div class="field" data-field="dueOn">
+            <label for="i-dueOn">Payable d’ici le</label>
+            <input class="input" id="i-dueOn" name="dueOn" type="date">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field" data-field="clientEmail">
+            <label for="i-clientEmail">Courriel du client</label>
+            <input class="input" id="i-clientEmail" name="clientEmail" type="email" inputmode="email" autocomplete="off" maxlength="254">
+          </div>
+          <div class="field" data-field="clientPhone">
+            <label for="i-clientPhone">Cellulaire du client</label>
+            <input class="input" id="i-clientPhone" name="clientPhone" type="tel" inputmode="tel" autocomplete="off" maxlength="40">
+          </div>
+        </div>
+        <div class="field" data-field="clientAddress">
+          <label for="i-clientAddress">Adresse des travaux</label>
+          <input class="input" id="i-clientAddress" name="clientAddress" maxlength="200" autocomplete="off">
+        </div>
+        <div class="field" data-field="terms">
+          <label for="i-terms">Conditions (visibles par ton client)</label>
+          <textarea class="textarea" id="i-terms" name="terms" maxlength="4000"></textarea>
+        </div>
+        <div class="field" data-field="notes">
+          <label for="i-notes">Notes privées</label>
+          <textarea class="textarea" id="i-notes" name="notes" maxlength="2000" placeholder="Jamais visibles par le client."></textarea>
+        </div>
+        <section class="link-box" id="invLinkBox" aria-labelledby="invLinkTitle" hidden></section>
+      </div>
+      <div class="sheet-foot">
+        <button class="btn btn-quiet" type="button" id="voidInvoice">Annuler la facture</button>
+        <span class="grow"></span>
+        <button class="btn btn-ghost on-paper" type="submit" id="saveInvoice">Enregistrer</button>
+        <button class="btn btn-ink" type="submit" id="saveSendInvoice" data-send="1">Enregistrer et envoyer</button>
       </div>
     </form>
   </dialog>
@@ -208,6 +317,7 @@
       </div>
       <div class="btn-row" id="sendDoneRow" hidden>
         <button class="btn btn-primary" type="button" id="sendDone">C’est envoyé</button>
+        <button class="btn btn-primary" type="button" id="reminderDone" hidden>Relance envoyée</button>
       </div>
       <p class="hint msg-context">Vérifie que ton client accepte d'être contacté par ce moyen. Rien n'est envoyé sans toi.</p>
     </div>

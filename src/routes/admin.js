@@ -22,7 +22,7 @@ export async function metrics(request, env) {
   const d30 = now - 30 * DAY;
   const one = (sql, ...args) => env.DB.prepare(sql).bind(...args).first();
 
-  const [users, s7, s30, activated, plans, interest, quotes, pending, ev30] = await Promise.all([
+  const [users, s7, s30, activated, plans, interest, quotes, pending, ev30, inv] = await Promise.all([
     one('SELECT COUNT(*) AS n FROM users'),
     one('SELECT COUNT(*) AS n FROM users WHERE created_at > ?', d7),
     one('SELECT COUNT(*) AS n FROM users WHERE created_at > ?', d30),
@@ -41,6 +41,10 @@ export async function metrics(request, env) {
            (SELECT COUNT(*) FROM quotes WHERE decided_online_at IS NOT NULL AND status = 'accepted') AS acceptedOnline
          FROM quotes WHERE status = 'pending'`),
     env.DB.prepare('SELECT name, COUNT(*) AS n FROM events WHERE created_at > ? GROUP BY name').bind(d30).all(),
+    one(`SELECT COUNT(*) AS n,
+           COALESCE(SUM(CASE WHEN status = 'unpaid' THEN total_cents END), 0) AS unpaid,
+           COALESCE(SUM(CASE WHEN status = 'paid' THEN total_cents END), 0) AS paid
+         FROM invoices`),
   ]);
 
   const byPlan = { trial: 0, trial_expired: 0, active: 0, past_due: 0, canceled: 0 };
@@ -73,6 +77,7 @@ export async function metrics(request, env) {
       quotes: quotes.n, totalQuotedCents: quotes.cents, pendingValueCents: pending.cents,
       detailedQuotes: pending.detailed, sharedQuotes: pending.shared, viewedQuotes: pending.viewed, acceptedOnline: pending.acceptedOnline,
     },
+    invoices: { count: inv.n, unpaidCents: inv.unpaid, paidCents: inv.paid },
     events30d,
   });
 }

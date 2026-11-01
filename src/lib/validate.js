@@ -106,6 +106,11 @@ function moneyFields(input) {
       discount_cents: 0, taxes: 0, gst_cents: 0, qst_cents: 0,
     };
   }
+  return detailedMoney(items, input);
+}
+
+/** Lignes validées + rabais + taxes → champs d'argent en cents (même calcul partout). */
+function detailedMoney(items, input) {
   const discountRaw = input.discount;
   const discount = discountRaw === undefined || discountRaw === null || discountRaw === '' ? 0 : toCents(discountRaw);
   if (discount === null) throw bad('discount', 'Rabais invalide.');
@@ -160,6 +165,86 @@ export function cleanBusiness(body) {
     qst_number: str(body.qstNumber, 'qstNumber', { max: 30, label: 'Le numéro de TVQ' }) || null,
     charge_taxes: body.chargeTaxes === false ? 0 : 1,
     default_terms: multiline(body.defaultTerms, 'defaultTerms', { max: 4000, label: 'Les conditions' }) || null,
+    payment_instructions: multiline(body.paymentInstructions, 'paymentInstructions', { max: 1000, label: 'Les instructions de paiement' }) || null,
+    invoice_due_days: dueDays(body.invoiceDueDays),
+  };
+}
+
+function dueDays(value) {
+  if (value === undefined || value === null || value === '') return 30;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 120) throw bad('invoiceDueDays', 'Délai de paiement : entre 0 et 120 jours.');
+  return n;
+}
+
+export const PAYMENT_METHODS = ['interac', 'cheque', 'cash', 'card', 'other'];
+
+/** Facture : toujours détaillée (au moins une ligne). */
+export function cleanInvoice(input) {
+  if (!input || typeof input !== 'object') throw bad('invoice', 'Facture invalide.');
+  const items = cleanItems(input.items);
+  if (!items) throw bad('items.0.description', 'Ajoute au moins une ligne à la facture.');
+  const money = detailedMoney(items, input);
+  const issued = isoDate(input.issuedOn ?? input.issued_on, 'issuedOn', { required: true, label: 'La date de facture' });
+  const due = isoDate(input.dueOn ?? input.due_on, 'dueOn', { required: true, label: "La date d'échéance" });
+  if (due < issued) throw bad('dueOn', "L'échéance doit être le jour de la facture ou après.");
+  const clientEmail = email(input.clientEmail ?? input.client_email, 'clientEmail', { required: false });
+  const phone = str(input.clientPhone ?? input.client_phone, 'clientPhone', { max: 40, label: 'Le téléphone' });
+  if (phone && !PHONE_RE.test(phone)) throw bad('clientPhone', 'Téléphone invalide.');
+  return {
+    client: str(input.client, 'client', { max: 120, required: true, label: 'Le nom du client' }),
+    project: str(input.project, 'project', { max: 160, required: true, label: 'Le projet' }),
+    client_email: clientEmail || null,
+    client_phone: phone || null,
+    client_address: str(input.clientAddress ?? input.client_address, 'clientAddress', { max: 200, label: "L'adresse" }) || null,
+    items_json: money.items_json,
+    subtotal_cents: money.subtotal_cents,
+    discount_cents: money.discount_cents,
+    taxes: money.taxes,
+    gst_cents: money.gst_cents,
+    qst_cents: money.qst_cents,
+    total_cents: money.amount_cents,
+    issued_on: issued,
+    due_on: due,
+    terms: multiline(input.terms, 'terms', { max: 4000, label: 'Les conditions' }) || null,
+    notes: multiline(input.notes, 'notes', { max: 2000, label: 'Les notes' }) || null,
+  };
+}
+
+export function invoiceToJson(row) {
+  return {
+    id: row.id,
+    quoteId: row.quote_id || null,
+    number: row.number,
+    client: row.client,
+    project: row.project,
+    clientEmail: row.client_email || '',
+    clientPhone: row.client_phone || '',
+    clientAddress: row.client_address || '',
+    items: itemsToJson(parseItems(row.items_json)),
+    subtotal: row.subtotal_cents / 100,
+    discount: (row.discount_cents || 0) / 100,
+    taxes: Boolean(row.taxes),
+    gst: (row.gst_cents || 0) / 100,
+    qst: (row.qst_cents || 0) / 100,
+    total: row.total_cents / 100,
+    amount: row.total_cents / 100,
+    issuedOn: row.issued_on,
+    dueOn: row.due_on,
+    status: row.status,
+    paidOn: row.paid_on || null,
+    paymentMethod: row.payment_method || null,
+    terms: row.terms || '',
+    notes: row.notes || '',
+    reminderCount: row.reminder_count || 0,
+    lastReminderOn: row.last_reminder_on || null,
+    shareToken: row.share_token || null,
+    sharedAt: row.shared_at || null,
+    viewCount: row.view_count || 0,
+    firstViewedAt: row.first_viewed_at || null,
+    lastViewedAt: row.last_viewed_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 

@@ -71,6 +71,8 @@ export function publicUser(user) {
       qstNumber: user.qst_number || '',
       chargeTaxes: user.charge_taxes === undefined || user.charge_taxes === null ? true : Boolean(user.charge_taxes),
       defaultTerms: user.default_terms || '',
+      paymentInstructions: user.payment_instructions || '',
+      invoiceDueDays: user.invoice_due_days === undefined || user.invoice_due_days === null ? 30 : user.invoice_due_days,
     },
   };
 }

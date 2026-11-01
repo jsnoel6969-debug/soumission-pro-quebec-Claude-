@@ -94,3 +94,50 @@ export function smsHref(phone, body) {
   // « ?&body= » fonctionne sur iOS et Android.
   return `sms:${num}?&body=${encodeURIComponent(body)}`;
 }
+
+/** Messages de facture : envoi ou rappel de paiement (ton courtois, jamais menaçant). */
+export function buildInvoiceMessage(inv, { channel = 'email', signer = {}, link = '', kind = 'send', paymentInstructions = '' } = {}) {
+  const client = inv.client.trim();
+  const project = `« ${inv.project.trim()} »`;
+  const total = `${money2(inv.total)}${inv.taxes ? ', taxes incluses' : ''}`;
+  const due = dateLong(inv.dueOn);
+  const name = (signer.displayName || '').trim();
+  const company = (signer.company || '').trim();
+  const phone = (signer.phone || '').trim();
+  const pay = paymentInstructions.trim();
+
+  if (channel === 'sms') {
+    const me = name ? `ici ${name}${company ? ` de ${company}` : ''}` : (company ? `ici ${company}` : '');
+    const hello = `Bonjour ${client}${me ? `, ${me}` : ''}.`;
+    const body = kind === 'reminder'
+      ? `${hello} Petit rappel : la facture n° ${inv.number} pour ${project} (${total}) était payable le ${due}. Si c'est déjà réglé, merci et oubliez ce message!`
+      : `${hello} Voici la facture n° ${inv.number} pour ${project} (${total}), payable d'ici le ${due}.`;
+    return { subject: '', body: `${body}${link ? ` ${link}` : ''}${pay ? ` Paiement : ${pay}` : ''}` };
+  }
+
+  const signature = [name || '[Ton nom]', company, phone].filter(Boolean).join('\n');
+  const linkPara = link ? `\n\nVous pouvez consulter la facture et l'enregistrer en PDF ici :\n${link}` : '';
+  const payPara = pay ? `\n\nModalités de paiement : ${pay}` : '';
+  if (kind === 'reminder') {
+    return {
+      subject: `Rappel : facture n° ${inv.number}`,
+      body: `Bonjour ${client},
+
+Petit rappel amical : la facture n° ${inv.number} pour ${project}, au montant de ${total}, était payable le ${due}.${linkPara}${payPara}
+
+Si le paiement est déjà parti, merci et ne tenez pas compte de ce message.
+
+Bonne journée,
+${signature}`,
+    };
+  }
+  return {
+    subject: `Facture n° ${inv.number} : ${project}`,
+    body: `Bonjour ${client},
+
+Merci de votre confiance. Voici la facture n° ${inv.number} pour ${project}, au montant de ${total}, payable d'ici le ${due}.${linkPara}${payPara}
+
+Au plaisir,
+${signature}`,
+  };
+}

@@ -1,7 +1,16 @@
-# Soumission Pro v2.1
+# Soumission Pro v2.2
 
 Du prototype local (données dans un seul navigateur, aucun paiement) à un SaaS qui encaisse :
 comptes, synchronisation cellulaire/ordinateur, essai gratuit, abonnement Stripe, export, suppression de compte, tableau de bord KPI.
+
+**v2.2 (1er nov. 2026) — factures**
+- Une soumission (acceptée ou en attente) devient une facture en un geste : lignes, rabais, TPS/TVQ et client repris
+  (la version acceptée en ligne si elle existe). Numérotation `F-2026-001`, une seule facture par soumission.
+- Extras ajoutés sur la facture, échéance (délai par défaut dans le profil), modalités de paiement (ex. Interac).
+- Lien client `/f/<jeton>` : facture imprimable/PDF, « Comment payer », ouvertures suivies.
+- Paiement marqué à la main (Interac, chèque, comptant, carte), annulation sans réutiliser le numéro, rappels de paiement.
+- Onglet Factures : à encaisser, en retard, encaissé sur 30 jours. Export CSV comptable pour ton CPA.
+- Migration 0003 (déjà appliquée sur D1). `CLAUDE.md` décrit le projet pour les prochaines sessions de code.
 
 **v2.1 (31 oct. 2026) — de la soumission au contrat accepté**
 - Soumission détaillée : lignes (quantités décimales, unités), rabais, TPS 5 % et TVQ 9,975 % calculées au cent près
@@ -35,7 +44,7 @@ soumission-pro/
 ├── legacy/                  code du staging du 25 oct. récupéré (base du futur forfait Pro)
 └── scripts/
     ├── local-server.mjs       serveur de test sans wrangler (Node 22 + SQLite)
-    └── e2e.mjs                216 vérifications API (115 avec Stripe, 101 sans)
+    └── e2e.mjs                276 vérifications API (145 avec Stripe, 131 sans)
 ```
 
 ---
@@ -43,7 +52,7 @@ soumission-pro/
 ## 1. Mettre en ligne
 
 Déjà fait le 31 oct. 2026 : base D1 `soumission-pro` créée (ENAM) et tables en place (`wrangler.toml` est à jour).
-La v2 se déploie sur un **Worker séparé**, `soumission-pro-v2` → https://soumission-pro-v2.jsnoel6969.workers.dev.
+La v2 se déploie sur un **Worker séparé**, `soumission-pro-quebec-claude` → https://soumission-pro-quebec-claude.jsnoel6969.workers.dev.
 `soumission-pro-quebec` (prod actuelle) et `soumission-pro-quebec-staging` ne sont **pas touchés**.
 
 Dans `wrangler.toml`, remplis **avant** de déployer :
@@ -57,8 +66,8 @@ Dans `wrangler.toml`, remplis **avant** de déployer :
 **Option A : depuis GitHub (aucune ligne de commande, faisable au cellulaire)**
 1. Le code est dans le dépôt GitHub privé.
 2. Cloudflare → Workers & Pages → Créer → **Importer un dépôt** → choisis le dépôt.
-   Nom du projet : `soumission-pro-v2` (doit correspondre à `name` dans `wrangler.toml`). Commande de déploiement : `npx wrangler deploy`.
-3. Après le 1er déploiement : Worker `soumission-pro-v2` → Paramètres → Variables et secrets → ajouter le **secret** `ADMIN_TOKEN` (48 caractères aléatoires).
+   Nom du projet : `soumission-pro-quebec-claude` (doit correspondre à `name` dans `wrangler.toml`). Commande de déploiement : `npx wrangler deploy`.
+3. Après le 1er déploiement : Worker `soumission-pro-quebec-claude` → Paramètres → Variables et secrets → ajouter le **secret** `ADMIN_TOKEN` (48 caractères aléatoires).
 4. Chaque modification poussée sur `main` se redéploie toute seule.
 
 **Option B : depuis un ordinateur**
@@ -80,7 +89,7 @@ et personne n'est bloqué à la fin de l'essai tant que le paiement n'est pas ou
 
 1. Stripe → Produits → **Soumission Pro – Accès fondateur**, prix récurrent **mensuel 29 CAD** → copie le `price_…` dans `STRIPE_PRICE_ID`.
 2. `npx wrangler secret put STRIPE_SECRET_KEY` (commence avec la clé **test** `sk_test_…`).
-3. Stripe → Développeurs → Webhooks → endpoint `https://soumission-pro-v2.jsnoel6969.workers.dev/api/stripe/webhook`
+3. Stripe → Développeurs → Webhooks → endpoint `https://soumission-pro-quebec-claude.jsnoel6969.workers.dev/api/stripe/webhook`
    avec les événements : `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`,
    `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`
    → `npx wrangler secret put STRIPE_WEBHOOK_SECRET` (le `whsec_…`).
@@ -93,7 +102,7 @@ Taxes : `STRIPE_AUTOMATIC_TAX="false"` par défaut. Inscription TPS/TVQ et seuil
 ## 3. Piloter (KPI, support)
 
 ```bash
-T=ton_jeton_admin; U=https://soumission-pro-v2.jsnoel6969.workers.dev
+T=ton_jeton_admin; U=https://soumission-pro-quebec-claude.jsnoel6969.workers.dev
 curl -H "Authorization: Bearer $T" $U/api/admin/metrics   # entonnoir : inscriptions → activés → réservations → payants, MRR
 curl -H "Authorization: Bearer $T" $U/api/admin/users     # 200 derniers comptes : appelle les essais en cours
 curl -X POST -H "Authorization: Bearer $T" -H "Content-Type: application/json" \

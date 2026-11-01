@@ -243,6 +243,93 @@ async function main() {
   r = await visitor.req('GET', '/api/public/quotes/inexistantinexistantinexistant');
   check('jeton inconnu', r.status === 404, r.status);
 
+  // --- Factures (v2.2) ---
+  r = await a.req('PATCH', '/api/me', { displayName: 'Jean-Sébastien', company: 'Rénos JS', business: {
+    businessPhone: '514 555-0199', rbqNumber: '5678-1234-01', gstNumber: '123456789RT0001', qstNumber: '1234567890TQ0001',
+    paymentInstructions: 'Virement Interac à paiement@renosjs.ca', invoiceDueDays: 15 } });
+  check('profil paiement', r.status === 200 && r.data.user.business.paymentInstructions.startsWith('Virement') && r.data.user.business.invoiceDueDays === 15, r.data);
+  r = await a.req('PATCH', '/api/me', { displayName: 'Jean-Sébastien', business: { invoiceDueDays: 500 } });
+  check('délai invalide', r.status === 400 && r.data.error.field === 'invoiceDueDays', r.data);
+  await a.req('PATCH', '/api/me', { displayName: 'Jean-Sébastien', company: 'Rénos JS', business: {
+    businessPhone: '514 555-0199', rbqNumber: '5678-1234-01', gstNumber: '123456789RT0001', qstNumber: '1234567890TQ0001',
+    paymentInstructions: 'Virement Interac à paiement@renosjs.ca', invoiceDueDays: 30 } });
+
+  r = await a.req('POST', '/api/quotes', { client: 'Luc Bérubé', project: 'Salle de bain', sentOn: today, clientEmail: 'luc@exemple.ca',
+    notes: 'NOTE PRIVÉE FACTURE', items: [{ description: 'Main-d’œuvre', qty: 10, unit: 'h', unitPrice: 75 }, { description: 'Matériaux', qty: 1, unitPrice: 500 }],
+    discount: 50, taxes: true });
+  const q3 = r.data.quote;
+  r = await a.req('POST', `/api/quotes/${q3.id}/share`, {});
+  const t3 = r.data.quote.shareToken;
+  r = await visitor.req('POST', `/api/public/quotes/${t3}/decision`, { decision: 'accept', name: 'Luc Bérubé', confirm: true });
+  check('q3 acceptée', r.status === 200, r.data);
+  // Changement après acceptation : la facture doit reprendre la version acceptée.
+  await a.req('PUT', `/api/quotes/${q3.id}`, { ...q3, status: 'accepted', items: [{ description: 'Autre', qty: 1, unitPrice: 1 }] });
+
+  r = await a.req('POST', `/api/quotes/${q3.id}/invoice`, {});
+  const inv = r.data.invoice;
+  check('facture créée', r.status === 201 && r.data.created === true && /^F-\d{4}-001$/.test(inv.number) && inv.total === 1379.7
+    && inv.items.length === 2 && inv.taxes === true && inv.gst === 60 && inv.qst === 119.7 && inv.status === 'unpaid' && inv.quoteId === q3.id, r.data);
+  const plus30 = new Date(Date.parse(inv.issuedOn + 'T12:00:00Z') + 30 * 864e5).toISOString().slice(0, 10);
+  check('échéance 30 jours', inv.dueOn === plus30, [inv.issuedOn, inv.dueOn]);
+  r = await a.req('POST', `/api/quotes/${q3.id}/invoice`, {});
+  check('une seule facture par soumission', r.status === 200 && r.data.created === false && r.data.invoice.id === inv.id, r.data);
+  r = await a.req('POST', `/api/quotes/${simpleId}/invoice`, {});
+  const inv2 = r.data.invoice;
+  check('facture depuis montant simple', r.status === 201 && inv2.items.length === 1 && inv2.total === 500 && inv2.taxes === false && /^F-\d{4}-002$/.test(inv2.number), r.data);
+  r = await a.req('POST', `/api/quotes/${dq.id}/invoice`, {});
+  check('pas de facture sur refusée', r.status === 409, r.data);
+
+  r = await b.req('GET', '/api/invoices');
+  check('B ne voit pas les factures de A', r.status === 200 && r.data.invoices.length === 0, r.data);
+  r = await b.req('PUT', `/api/invoices/${inv.id}`, inv);
+  check('B ne modifie pas la facture de A', r.status === 404, r.status);
+  r = await b.req('POST', `/api/invoices/${inv.id}/payment`, { paidOn: today, method: 'interac' });
+  check('B ne paie pas la facture de A', r.status === 404, r.status);
+
+  r = await a.req('PUT', `/api/invoices/${inv.id}`, { ...inv, dueOn: '2000-01-01' });
+  check('échéance avant facture refusée', r.status === 400 && r.data.error.field === 'dueOn', r.data);
+  r = await a.req('PUT', `/api/invoices/${inv.id}`, { ...inv, items: [] });
+  check('facture sans ligne refusée', r.status === 400 && r.data.error.field === 'items.0.description', r.data);
+  r = await a.req('PUT', `/api/invoices/${inv.id}`, { ...inv, items: [...inv.items, { description: 'Extra : prise GFCI', qty: 1, unitPrice: 120 }] });
+  check('extra ajouté', r.status === 200 && r.data.invoice.subtotal === 1370 && r.data.invoice.total === 1517.67, r.data.invoice);
+
+  r = await a.req('POST', `/api/invoices/${inv.id}/payment`, { method: 'interac' });
+  check('paiement sans date', r.status === 400 && r.data.error.field === 'paidOn', r.data);
+  r = await a.req('POST', `/api/invoices/${inv.id}/payment`, { paidOn: today, method: 'bitcoin' });
+  check('mode de paiement invalide', r.status === 400 && r.data.error.field === 'method', r.data);
+  r = await a.req('POST', `/api/invoices/${inv.id}/payment`, { paidOn: today, method: 'interac' });
+  check('payée', r.status === 200 && r.data.invoice.status === 'paid' && r.data.invoice.paidOn === today && r.data.invoice.paymentMethod === 'interac', r.data);
+  r = await a.req('PUT', `/api/invoices/${inv.id}`, inv);
+  check('facture payée verrouillée', r.status === 409, r.data);
+  r = await a.req('POST', `/api/invoices/${inv.id}/void`, {});
+  check('pas d’annulation si payée', r.status === 409, r.data);
+  r = await a.req('DELETE', `/api/invoices/${inv.id}/payment`);
+  check('paiement annulé', r.status === 200 && r.data.invoice.status === 'unpaid' && r.data.invoice.paidOn === null, r.data);
+  r = await a.req('POST', `/api/invoices/${inv2.id}/reminder`, {});
+  check('relance de paiement', r.status === 200 && r.data.invoice.reminderCount === 1 && r.data.invoice.lastReminderOn, r.data);
+  r = await a.req('POST', `/api/invoices/${inv2.id}/void`, {});
+  check('facture annulée', r.status === 200 && r.data.invoice.status === 'void', r.data);
+  r = await a.req('PUT', `/api/invoices/${inv2.id}`, inv2);
+  check('annulée verrouillée', r.status === 409, r.data);
+  r = await a.req('POST', `/api/invoices/${inv2.id}/reminder`, {});
+  check('pas de relance si annulée', r.status === 409, r.data);
+
+  r = await a.req('POST', `/api/invoices/${inv.id}/share`, {});
+  const ftok = r.data.invoice.shareToken;
+  check('lien facture', r.status === 200 && typeof ftok === 'string' && ftok.length >= 30, r.data);
+  r = await visitor.req('GET', `/api/public/invoices/${ftok}`);
+  const ftext = JSON.stringify(r.data);
+  check('page facture client', r.status === 200 && r.data.invoice.total === 1517.67 && r.data.invoice.status === 'unpaid'
+    && r.data.business.paymentInstructions.startsWith('Virement') && r.data.viewer.isOwner === false, r.data);
+  check('facture : rien de privé', !ftext.includes('NOTE PRIVÉE') && !ftext.includes('luc@exemple.ca'), ftext.slice(0, 200));
+  r = await a.req('GET', '/api/invoices');
+  check('ouverture de facture comptée', r.data.invoices.find((x) => x.id === inv.id).viewCount === 1, r.data);
+  const fpage = await fetch(`${BASE}/f/${ftok}`);
+  check('page /f/ servie', fpage.status === 200 && (await fpage.text()).includes('quote-page.js'), fpage.status);
+  r = await a.req('DELETE', `/api/invoices/${inv.id}/share`);
+  r = await visitor.req('GET', `/api/public/invoices/${ftok}`);
+  check('lien facture désactivé', r.status === 404, r.status);
+
   // --- Connexion ---
   r = await a.req('POST', '/api/auth/logout', {}); check('logout', r.status === 200 && a.cookie === '');
   r = await a.req('GET', '/api/me'); check('après logout 401', r.status === 401);
@@ -310,7 +397,7 @@ async function main() {
   r = await a.req('GET', '/api/admin/metrics'); check('admin sans jeton 404', r.status === 404);
   r = await a.req('GET', '/api/admin/metrics', undefined, { headers: { authorization: 'Bearer mauvais' } }); check('admin mauvais jeton 404', r.status === 404);
   r = await a.req('GET', '/api/admin/metrics', undefined, { headers: { authorization: `Bearer ${ADMIN}` } });
-  check('admin metrics', r.status === 200 && r.data.funnel.users >= 2 && r.data.funnel.activatedUsers >= 1 && r.data.events30d.signup >= 2, r.data);
+  check('admin metrics', r.status === 200 && r.data.invoices.count === 2 && r.data.funnel.users >= 2 && r.data.funnel.activatedUsers >= 1 && r.data.events30d.signup >= 2, r.data);
   r = await a.req('GET', '/api/admin/users', undefined, { headers: { authorization: `Bearer ${ADMIN}` } });
   check('admin users', r.status === 200 && r.data.users.some((u) => u.email === email), r.data);
 

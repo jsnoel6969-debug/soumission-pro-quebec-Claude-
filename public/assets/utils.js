@@ -140,6 +140,20 @@ export function toCsv(quotes) {
   // BOM + point-virgule : s'ouvre proprement dans Excel en français.
   return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(';')).join('\r\n');
 }
+export const PAYMENT_LABEL = { interac: 'Virement Interac', cheque: 'Chèque', cash: 'Comptant', card: 'Carte', other: 'Autre' };
+export const INVOICE_STATUS_LABEL = { unpaid: 'À payer', paid: 'Payée', void: 'Annulée' };
+
+/** Export comptable des factures (pour ton CPA). */
+export function toInvoicesCsv(invoices) {
+  const head = ['Numéro', 'Date', 'Échéance', 'Client', 'Projet', 'Sous-total', 'Rabais', 'TPS', 'TVQ', 'Total', 'Statut', 'Payée le', 'Mode de paiement'];
+  const dec = (n) => Number(n || 0).toFixed(2).replace('.', ',');
+  const rows = invoices.map((i) => [
+    i.number, i.issuedOn, i.dueOn, i.client, i.project, dec(i.subtotal), dec(i.discount), dec(i.gst), dec(i.qst), dec(i.total),
+    INVOICE_STATUS_LABEL[i.status] || i.status, i.paidOn || '', i.paymentMethod ? PAYMENT_LABEL[i.paymentMethod] : '',
+  ]);
+  return '\uFEFF' + [head, ...rows].map((r) => r.map(csvCell).join(';')).join('\r\n');
+}
+
 export function toJsonExport(quotes) {
   return JSON.stringify({
     app: 'soumission-pro', version: 2, exportedAt: new Date().toISOString(),

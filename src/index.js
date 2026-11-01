@@ -5,6 +5,7 @@ import * as quotes from './routes/quotes.js';
 import * as billing from './routes/billing.js';
 import * as admin from './routes/admin.js';
 import * as pub from './routes/public.js';
+import * as invoices from './routes/invoices.js';
 
 /** Config publique lue par le site (prix, essai, places fondateur réelles). */
 async function publicConfig(request, env) {
@@ -47,6 +48,16 @@ const routes = [
   ['DELETE', new RegExp(`^/api/quotes/${ID}/share$`), quotes.unshareQuote],
   ['GET', /^\/api\/public\/quotes\/([A-Za-z0-9_-]{20,64})$/, pub.getPublicQuote],
   ['POST', /^\/api\/public\/quotes\/([A-Za-z0-9_-]{20,64})\/decision$/, pub.decidePublicQuote],
+  ['POST', new RegExp(`^/api/quotes/${ID}/invoice$`), invoices.createFromQuote],
+  ['GET', /^\/api\/invoices$/, invoices.listInvoices],
+  ['PUT', new RegExp(`^/api/invoices/${ID}$`), invoices.updateInvoice],
+  ['POST', new RegExp(`^/api/invoices/${ID}/payment$`), invoices.markPaid],
+  ['DELETE', new RegExp(`^/api/invoices/${ID}/payment$`), invoices.unmarkPaid],
+  ['POST', new RegExp(`^/api/invoices/${ID}/void$`), invoices.voidInvoice],
+  ['POST', new RegExp(`^/api/invoices/${ID}/reminder$`), invoices.recordReminder],
+  ['POST', new RegExp(`^/api/invoices/${ID}/share$`), invoices.shareInvoice],
+  ['DELETE', new RegExp(`^/api/invoices/${ID}/share$`), invoices.unshareInvoice],
+  ['GET', /^\/api\/public\/invoices\/([A-Za-z0-9_-]{20,64})$/, invoices.getPublicInvoice],
   ['POST', /^\/api\/billing\/checkout$/, billing.checkout],
   ['POST', /^\/api\/billing\/portal$/, billing.portal],
   ['POST', /^\/api\/stripe\/webhook$/, billing.webhook],
@@ -74,7 +85,7 @@ async function handleApi(request, env, url) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (/^\/s\/[A-Za-z0-9_-]{20,64}$/.test(url.pathname) && (request.method === 'GET' || request.method === 'HEAD')) {
+    if (/^\/[sf]\/[A-Za-z0-9_-]{20,64}$/.test(url.pathname) && (request.method === 'GET' || request.method === 'HEAD')) {
       return pub.servePublicPage(request, env);
     }
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);
