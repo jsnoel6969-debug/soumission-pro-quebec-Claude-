@@ -2,6 +2,7 @@
 import { api } from './store.js';
 import { h, money2 } from './utils.js';
 import { computeTotals } from './money.js';
+import { createSignaturePad } from './signature-pad.js';
 
 const root = document.getElementById('root');
 const token = location.pathname.split('/').filter(Boolean).pop() || '';
@@ -37,6 +38,7 @@ function totalsRows(q, totalLabel) {
   if (q.detailed) {
     totals.push(row('Sous-total', money2(q.subtotal)));
     if (q.discount) totals.push(row('Rabais', `− ${money2(q.discount)}`));
+    if (q.depositApplied) totals.push(row(`Acompte facturé${q.depositRef ? ` (${q.depositRef})` : ''}`, `− ${money2(q.depositApplied)}`));
     if (q.taxes) {
       totals.push(row('TPS (5 %)', money2(q.gst)));
       totals.push(row('TVQ (9,975 %)', money2(q.qst)));
@@ -118,7 +120,7 @@ function stateBanner(q, b, viewer) {
   }
   if (q.status === 'accepted') {
     return h('p', { class: 'doc-state is-go' }, q.decidedOnline
-      ? `Soumission acceptée par ${q.decidedByName} le ${stampText(q.decidedAt)}. ${b.name} vous contactera pour planifier les travaux.`
+      ? `Soumission ${q.signedInPerson ? 'signée' : 'acceptée'} par ${q.decidedByName} le ${stampText(q.decidedAt)}. ${b.name} vous contactera pour planifier les travaux.`
       : `Cette soumission est acceptée. ${b.name} vous contactera pour la suite.`);
   }
   if (q.status === 'refused') {
@@ -137,6 +139,7 @@ function decisionView(data) {
   if (q.status !== 'pending' || q.expired) return null;
 
   const errorBox = h('div', { class: 'alert alert-error', role: 'alert', hidden: true });
+  const pad = viewer.isOwner ? null : createSignaturePad({ id: 'd-signature', label: 'Signez avec le doigt (recommandé)' });
   const nameInput = h('input', { class: 'input', id: 'd-name', autocomplete: 'name', maxlength: '120', required: true, disabled: viewer.isOwner });
   const confirmBox = h('input', { type: 'checkbox', id: 'd-confirm', disabled: viewer.isOwner });
   const acceptBtn = h('button', { class: 'btn btn-primary btn-block', type: 'submit', disabled: viewer.isOwner }, 'Accepter la soumission');
@@ -164,11 +167,13 @@ function decisionView(data) {
       ev.preventDefault();
       if (nameInput.value.trim().length < 2) { errorBox.textContent = 'Inscrivez votre nom complet.'; errorBox.hidden = false; nameInput.focus(); return; }
       if (!confirmBox.checked) { errorBox.textContent = 'Cochez la case pour confirmer votre acceptation.'; errorBox.hidden = false; confirmBox.focus(); return; }
-      decide({ decision: 'accept', name: nameInput.value, confirm: true, options: [...chosen] }, acceptBtn);
+      const signature = pad && !pad.isEmpty() ? pad.dataUrl() : undefined;
+      decide({ decision: 'accept', name: nameInput.value, confirm: true, options: [...chosen], signature }, acceptBtn);
     },
   },
   errorBox,
   h('div', { class: 'field' }, h('label', { for: 'd-name' }, 'Votre nom complet'), nameInput),
+  pad ? pad.el : null,
   h('label', { class: 'check' }, confirmBox,
     h('span', {}, `J’accepte cette soumission de ${b.name} au montant de `, h('span', { id: 'acceptAmount' }, money2(canChoose(q) ? liveTotals(q).total : q.total)),
       `${hasOptions(q) ? ', options choisies incluses,' : ''} et j’autorise l’entreprise à me contacter pour planifier les travaux.`)),
@@ -190,6 +195,16 @@ function decisionView(data) {
     acceptForm,
     h('details', {}, h('summary', {}, 'Refuser la soumission'), refuseForm),
     h('p', { class: 'fine' }, 'Votre acceptation en ligne confirme votre accord avec cette soumission. Elle ne remplace pas un contrat écrit lorsque la loi en exige un.'));
+}
+
+/** Signature du client, telle que signée (en ligne ou sur place). Imprimée avec la soumission. */
+function signatureView(q) {
+  if (q.status !== 'accepted' || !q.signature) return null;
+  return h('section', { class: 'slip doc-signature', 'aria-labelledby': 'sigTitle' },
+    h('span', { class: 'slip-perf', 'aria-hidden': 'true' }),
+    h('h2', { id: 'sigTitle' }, 'Signature du client'),
+    h('img', { src: q.signature, alt: `Signature de ${q.decidedByName}`, class: 'sig-image' }),
+    h('p', { class: 'fine' }, `${q.decidedByName}, le ${stampText(q.decidedAt)}${q.signedInPerson ? ', signée en personne' : ', signée en ligne'}.`));
 }
 
 function invoiceBanner(f, b, viewer) {
@@ -220,7 +235,7 @@ function renderInvoice(data) {
   root.replaceChildren(...[
     invoiceBanner(f, b, viewer),
     documentView(f, b, {
-      label: 'Facture',
+      label: f.kind === 'deposit' ? 'Facture d’acompte' : 'Facture',
       dates: [['Date', f.issuedOn], ['Payable d’ici le', f.status === 'unpaid' ? f.dueOn : null]],
       totalLabel: f.status === 'unpaid' ? 'Total à payer' : 'Total',
       partyLabel: 'Facturée à',
@@ -239,6 +254,7 @@ function render(data) {
   root.replaceChildren(...[
     stateBanner(q, b, viewer),
     documentView(q, b, { dates: [['Date', q.sentOn], ['Valide jusqu’au', q.validUntil]] }),
+    signatureView(q),
     decisionView(data),
     h('div', { class: 'doc-actions' },
       h('button', { class: 'btn btn-ink', type: 'button', onClick: () => window.print() }, 'Imprimer ou enregistrer en PDF'),

@@ -6,20 +6,14 @@ import { assertCanWrite, rateLimit, track } from '../lib/guards.js';
 import {
   PAYMENT_METHODS, cleanInvoice, invoiceToJson, isoDate, itemsToJson, parseItems,
 } from '../lib/validate.js';
-import { TOKEN_RE, todayToronto } from './public.js';
+import { TOKEN_RE, todayToronto, addDays } from '../lib/dates.js';
 
 const MAX_INVOICES_PER_USER = 5000;
 const VIEW_WINDOW_MS = 30 * 60 * 1000;
 const WRITE_COLS = [
   'client', 'project', 'client_email', 'client_phone', 'client_address', 'items_json', 'subtotal_cents',
-  'discount_cents', 'taxes', 'gst_cents', 'qst_cents', 'total_cents', 'issued_on', 'due_on', 'terms', 'notes',
+  'discount_cents', 'taxes', 'gst_cents', 'qst_cents', 'total_cents', 'issued_on', 'due_on', 'terms', 'notes', 'work_end_on',
 ];
-
-function addDays(iso, days) {
-  const d = new Date(`${iso}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
 
 async function getOwned(env, userId, id) {
   const row = await env.DB.prepare('SELECT * FROM invoices WHERE id = ? AND user_id = ?').bind(id, userId).first();
@@ -31,7 +25,7 @@ function assertStatus(row, expected, message) {
   if (row.status !== expected) throw new HttpError(409, 'bad_status', message);
 }
 
-async function nextNumber(env, userId) {
+export async function nextInvoiceNumber(env, userId) {
   const row = await env.DB.prepare(
     'UPDATE users SET next_invoice_number = next_invoice_number + 1 WHERE id = ? RETURNING next_invoice_number - 1 AS n'
   ).bind(userId).first();
@@ -84,17 +78,33 @@ export async function createFromQuote(request, env, quoteId) {
   const src = sourceOf(quote);
   const issuedOn = todayToronto();
   const dueDays = Number.isInteger(user.invoice_due_days) ? user.invoice_due_days : 30;
-  const inv = cleanInvoice({
+  // Acompte déjà facturé pour cette soumission : déduit avant taxes, pour que la TPS et la TVQ ne comptent pas deux fois.
+  const deposit = await env.DB.prepare(
+    "SELECT * FROM invoices WHERE deposit_quote_id = ? AND user_id = ? AND status != 'void'"
+  ).bind(quoteId, user.id).first();
+  const depositAppliedCents = deposit ? Math.max(0, deposit.subtotal_cents - (deposit.discount_cents || 0)) : 0;
+  const base = {
     client: quote.client, project: src.project, clientEmail: quote.client_email, clientPhone: quote.client_phone,
     clientAddress: quote.client_address, items: src.items, discount: src.discount, taxes: src.taxes,
     issuedOn, dueOn: addDays(issuedOn, dueDays), terms: src.terms, notes: '',
-  });
+  };
+  let inv;
+  let applied = depositAppliedCents;
+  try {
+    inv = cleanInvoice(base, { depositAppliedCents: applied });
+  } catch (err) {
+    // Acompte plus grand que la facture (soumission modifiée après coup) : on facture sans déduire, l'entrepreneur ajuste.
+    if (!applied) throw err;
+    applied = 0;
+    inv = cleanInvoice(base);
+  }
   const id = newId();
   const now = Date.now();
-  const cols = ['id', 'user_id', 'quote_id', 'number', ...WRITE_COLS, 'created_at', 'updated_at'];
+  const cols = ['id', 'user_id', 'quote_id', 'number', ...WRITE_COLS, 'deposit_applied_cents', 'deposit_ref', 'created_at', 'updated_at'];
   try {
     await env.DB.prepare(`INSERT INTO invoices (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`)
-      .bind(id, user.id, quoteId, await nextNumber(env, user.id), ...WRITE_COLS.map((c) => inv[c] ?? null), now, now).run();
+      .bind(id, user.id, quoteId, await nextInvoiceNumber(env, user.id), ...WRITE_COLS.map((c) => inv[c] ?? null),
+        applied, applied && deposit ? deposit.number : null, now, now).run();
   } catch (err) {
     // Double clic : l'index unique sur quote_id garantit une seule facture.
     if (String(err && err.message).includes('UNIQUE')) {
@@ -114,7 +124,7 @@ export async function updateInvoice(request, env, id) {
   assertStatus(row, 'unpaid', row.status === 'paid'
     ? 'Facture payée : annule le paiement avant de la modifier.'
     : 'Facture annulée : elle ne peut plus être modifiée.');
-  const inv = cleanInvoice(await readJson(request, 60_000));
+  const inv = cleanInvoice(await readJson(request, 60_000), { depositAppliedCents: row.deposit_applied_cents || 0 });
   await env.DB.prepare(`UPDATE invoices SET ${WRITE_COLS.map((c) => `${c} = ?`).join(', ')}, updated_at = ? WHERE id = ? AND user_id = ?`)
     .bind(...WRITE_COLS.map((c) => inv[c] ?? null), Date.now(), id, user.id).run();
   return json({ invoice: invoiceToJson(await getOwned(env, user.id, id)) });
@@ -215,6 +225,7 @@ export async function getPublicInvoice(request, env, token) {
       issuedOn: inv.issuedOn, dueOn: inv.dueOn, detailed: true, items: inv.items, subtotal: inv.subtotal,
       discount: inv.discount, taxes: inv.taxes, gst: inv.gst, qst: inv.qst, total: inv.total, terms: inv.terms,
       status: inv.status, paidOn: inv.paidOn, overdue: inv.status === 'unpaid' && inv.dueOn < todayToronto(),
+      kind: inv.kind, depositApplied: inv.depositApplied, depositRef: inv.depositRef,
     },
     business: {
       name: row.company || row.display_name || 'Entrepreneur',
@@ -229,4 +240,75 @@ export async function getPublicInvoice(request, env, token) {
     },
     viewer: { isOwner },
   }, 200, { 'x-robots-tag': 'noindex, nofollow' });
+}
+
+// ---------- Facture d'acompte ----------
+/** Base de l'acompte, avant taxes (le client paie ce pourcentage du total, taxes incluses). */
+function depositBase(quote, pct) {
+  const detailed = Boolean(parseItems(quote.items_json));
+  if (detailed) {
+    const base = (quote.subtotal_cents || 0) - (quote.discount_cents || 0);
+    return { cents: Math.round((base * pct) / 100), taxes: Boolean(quote.taxes) };
+  }
+  return { cents: Math.round((quote.amount_cents * pct) / 100), taxes: false };
+}
+
+/**
+ * Crée la facture d'acompte d'une soumission acceptée (une seule par soumission, payable tout de suite).
+ * pct absent = pourcentage du profil ; 0 = rien à faire. Retourne { invoice, created } ou null.
+ */
+export async function ensureDeposit(env, user, quoteId, { pct = null } = {}) {
+  const percent = pct === null ? (Number(user.deposit_pct) || 0) : pct;
+  if (!percent) return null;
+  const existing = await env.DB.prepare('SELECT * FROM invoices WHERE deposit_quote_id = ? AND user_id = ?').bind(quoteId, user.id).first();
+  if (existing) return { invoice: existing, created: false };
+  const quote = await env.DB.prepare('SELECT * FROM quotes WHERE id = ? AND user_id = ?').bind(quoteId, user.id).first();
+  if (!quote || quote.status !== 'accepted') return null;
+  const { cents, taxes } = depositBase(quote, percent);
+  if (cents <= 0) return null;
+  const issuedOn = todayToronto();
+  const label = `Acompte de ${percent} % à la signature${quote.number ? ` — soumission n° ${quote.number}` : ''} « ${quote.project} »`;
+  const inv = cleanInvoice({
+    client: quote.client, project: quote.project, clientEmail: quote.client_email, clientPhone: quote.client_phone,
+    clientAddress: quote.client_address, items: [{ description: label.slice(0, 250), qty: 1, unit: '', unitPrice: cents / 100 }],
+    discount: 0, taxes, issuedOn, dueOn: issuedOn, terms: quote.terms || '', notes: '',
+  });
+  const id = newId();
+  const now = Date.now();
+  const cols = ['id', 'user_id', 'quote_id', 'number', ...WRITE_COLS, 'kind', 'deposit_quote_id', 'created_at', 'updated_at'];
+  try {
+    await env.DB.prepare(`INSERT INTO invoices (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`)
+      .bind(id, user.id, null, await nextInvoiceNumber(env, user.id), ...WRITE_COLS.map((c) => inv[c] ?? null),
+        'deposit', quoteId, now, now).run();
+  } catch (err) {
+    if (String(err && err.message).includes('UNIQUE')) {
+      const again = await env.DB.prepare('SELECT * FROM invoices WHERE deposit_quote_id = ? AND user_id = ?').bind(quoteId, user.id).first();
+      if (again) return { invoice: again, created: false };
+    }
+    throw err;
+  }
+  await track(env, 'deposit_invoice_created', user.id);
+  return { invoice: await getOwned(env, user.id, id), created: true };
+}
+
+/** POST /api/quotes/:id/deposit : facture d'acompte à la demande (pourcentage du profil ou envoyé). */
+export async function createDeposit(request, env, quoteId) {
+  const user = await requireUser(env, request);
+  assertCanWrite(user, env);
+  const quote = await env.DB.prepare('SELECT status FROM quotes WHERE id = ? AND user_id = ?').bind(quoteId, user.id).first();
+  if (!quote) throw new HttpError(404, 'not_found', 'Soumission introuvable.');
+  if (quote.status !== 'accepted') throw new HttpError(409, 'not_accepted', 'L’acompte se facture une fois la soumission acceptée.');
+  const body = await readJson(request, 2_000);
+  let pct = null;
+  if (body.pct !== undefined && body.pct !== null && body.pct !== '') {
+    pct = Number(body.pct);
+    if (!Number.isInteger(pct) || pct < 1 || pct > 100) {
+      throw new HttpError(400, 'validation_error', 'Acompte : entre 1 et 100 %.', { field: 'pct' });
+    }
+  } else if (!Number(user.deposit_pct)) {
+    throw new HttpError(400, 'validation_error', 'Indique le pourcentage d’acompte dans ton profil.', { field: 'pct' });
+  }
+  const r = await ensureDeposit(env, user, quoteId, { pct });
+  if (!r) throw new HttpError(409, 'nothing', 'Rien à facturer en acompte pour cette soumission.');
+  return json({ invoice: invoiceToJson(r.invoice), created: r.created }, r.created ? 201 : 200);
 }

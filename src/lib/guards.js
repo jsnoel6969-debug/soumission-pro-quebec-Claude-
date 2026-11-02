@@ -73,6 +73,8 @@ export function publicUser(user) {
       defaultTerms: user.default_terms || '',
       paymentInstructions: user.payment_instructions || '',
       invoiceDueDays: user.invoice_due_days === undefined || user.invoice_due_days === null ? 30 : user.invoice_due_days,
+      marginFloorPct: Number.isInteger(user.margin_floor_pct) ? user.margin_floor_pct : null,
+      depositPct: Number(user.deposit_pct) || 0,
     },
   };
 }

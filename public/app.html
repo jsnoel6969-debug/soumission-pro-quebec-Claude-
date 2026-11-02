@@ -20,6 +20,7 @@
     <div class="wrap">
       <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Soumission Pro</a>
       <div class="appbar-right">
+        <span class="plan-chip is-offline" id="netChip" role="status" hidden></span>
         <span class="plan-chip" id="planChip" hidden></span>
         <button class="btn btn-quiet btn-sm" id="accountBtn" type="button">Compte</button>
       </div>
@@ -33,25 +34,21 @@
       <p class="loading" id="loading">Chargement de tes soumissions…</p>
 
       <div id="content" hidden>
-        <div class="view-tabs" role="tablist" aria-label="Sections">
-          <button type="button" role="tab" id="tab-quotes" aria-controls="quotesView" aria-selected="true" data-view="quotes">Soumissions</button>
-          <button type="button" role="tab" id="tab-invoices" aria-controls="invoicesView" aria-selected="false" data-view="invoices">Factures <span class="tab-count num" id="invTabCount"></span></button>
+        <div id="todayView" role="region" aria-labelledby="todayTitle">
+          <div class="block-head today-head">
+            <h2 id="todayTitle">Aujourd’hui</h2>
+            <span class="count num" id="todayCount"></span>
+          </div>
+          <p class="today-summary" id="todaySummary"></p>
+          <div class="list today-list" id="todayList"></div>
         </div>
 
-        <div id="quotesView" role="tabpanel" aria-labelledby="tab-quotes">
+        <div id="quotesView" role="region" aria-labelledby="allTitle" hidden>
         <dl class="stats" id="stats"></dl>
-
-        <section class="block" aria-labelledby="dueTitle">
-          <div class="block-head">
-            <h2 id="dueTitle">À relancer</h2>
-            <span class="count num" id="dueCount"></span>
-          </div>
-          <div class="list list-due" id="dueList"></div>
-        </section>
 
         <section class="block" aria-labelledby="allTitle">
           <div class="block-head">
-            <h2 id="allTitle">Toutes les soumissions</h2>
+            <h2 id="allTitle">Soumissions</h2>
             <span class="count num" id="allCount"></span>
           </div>
           <div class="toolbar">
@@ -69,7 +66,7 @@
 
         </div>
 
-        <div id="invoicesView" role="tabpanel" aria-labelledby="tab-invoices" hidden>
+        <div id="invoicesView" role="region" aria-labelledby="invAllTitle" hidden>
           <dl class="stats" id="invStats"></dl>
           <section class="block" aria-labelledby="invDueTitle">
             <div class="block-head">
@@ -92,7 +89,14 @@
     </div>
   </main>
 
-  <button class="btn btn-primary fab" id="newBtn" type="button" hidden>+ Nouvelle soumission</button>
+  <button class="btn btn-primary fab" id="newBtn" type="button" hidden>+ Soumission</button>
+
+  <nav class="bottom-nav" id="bottomNav" aria-label="Sections" hidden>
+    <button type="button" data-view="today" aria-current="page"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="m9 15 2 2 4-4"/></svg>Aujourd’hui<span class="nav-count num" id="todayTabCount"></span></button>
+    <button type="button" data-view="quotes"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h9l3.5 3.5v13.5H6z"/><path d="M15 3.5V7h3.5M9 11h6M9 14.5h6M9 18h4"/></svg>Soumissions</button>
+    <button type="button" data-view="invoices"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6.5 9.5v5M17.5 9.5v5"/></svg>Factures<span class="nav-count num" id="invTabCount"></span></button>
+    <button type="button" data-account><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg>Profil</button>
+  </nav>
 
   <!-- Soumission -->
   <dialog class="sheet" id="quoteDialog" aria-labelledby="quoteTitle">
@@ -102,6 +106,12 @@
         <button class="close-x" type="button" data-close aria-label="Fermer">×</button>
       </div>
       <div class="sheet-body">
+        <div class="quote-actions" id="quoteActions">
+          <button class="btn btn-primary btn-sm" type="button" id="signHere" hidden>Faire signer ici</button>
+          <button class="btn btn-ink btn-sm" type="button" id="makeDeposit" hidden>Facture d’acompte</button>
+          <button class="btn btn-ink btn-sm" type="button" id="makeInvoice" hidden>Créer la facture</button>
+          <button class="btn btn-ghost on-paper btn-sm" type="button" id="duplicateQuote" hidden>Dupliquer</button>
+        </div>
         <div class="alert alert-error" id="quoteError" role="alert" hidden></div>
         <div class="field" data-field="client">
           <label for="f-client">Client</label>
@@ -119,6 +129,7 @@
           <legend>Détail de la soumission</legend>
           <div class="lines" id="lines"></div>
           <div class="line-tools">
+            <button class="btn btn-primary btn-sm" type="button" id="openCatalog">Bibliothèque</button>
             <button class="btn btn-ink btn-sm" type="button" id="addLine">Ajouter une ligne</button>
             <div class="quick-lines" id="quickLines" aria-label="Lignes fréquentes">
               <button type="button" data-line="Main-d’œuvre" data-unit="h">Main-d’œuvre</button>
@@ -139,6 +150,11 @@
             </div>
           </div>
           <dl class="totals" id="totals"></dl>
+          <div class="margin-bar" id="marginBar" role="status" hidden></div>
+          <div class="line-tools line-tools-2">
+            <button class="btn btn-ghost on-paper btn-sm" type="button" id="savePackage">Enregistrer comme forfait</button>
+            <label class="check"><input type="checkbox" id="showCosts"><span>Coûts et marge (privé)</span></label>
+          </div>
           <div class="form-row">
             <div class="field" data-field="validUntil">
               <label for="f-validUntil">Valide jusqu’au</label>
@@ -153,6 +169,7 @@
             <label for="f-terms">Conditions (visibles par ton client)</label>
             <textarea class="textarea" id="f-terms" name="terms" maxlength="4000" placeholder="Modalités de paiement, inclusions, exclusions, garantie…"></textarea>
           </div>
+          <label class="check check-box" data-field="subcontract"><input type="checkbox" id="f-subcontract" name="subcontract"><span>Sous-traitance : mon client n’est pas le propriétaire de l’immeuble</span></label>
         </fieldset>
         <div class="form-row">
           <div class="field" data-field="amount">
@@ -193,11 +210,11 @@
           <label for="f-notes">Notes privées</label>
           <textarea class="textarea" id="f-notes" name="notes" maxlength="2000" placeholder="Ce que le client a demandé, ce qui pourrait le faire hésiter… Jamais visible par le client."></textarea>
         </div>
+        <section class="notice-box" id="quoteNotice" hidden></section>
         <section class="link-box" id="linkBox" aria-labelledby="linkTitle" hidden></section>
       </div>
       <div class="sheet-foot">
         <button class="btn btn-quiet" type="button" id="deleteQuote" hidden>Supprimer</button>
-        <button class="btn btn-ghost on-paper" type="button" id="makeInvoice" hidden>Créer la facture</button>
         <span class="grow"></span>
         <button class="btn btn-ghost on-paper" type="button" data-close>Annuler</button>
         <button class="btn btn-ghost on-paper" type="submit" id="saveQuote">Enregistrer</button>
@@ -216,6 +233,7 @@
       <div class="sheet-body">
         <div class="alert alert-error" id="invoiceError" role="alert" hidden></div>
         <section class="pay-box" id="payBox" aria-live="polite"></section>
+        <section class="shield-box" id="shieldBox" hidden></section>
         <div class="form-row">
           <div class="field" data-field="client">
             <label for="i-client">Client</label>
@@ -254,6 +272,11 @@
             <label for="i-dueOn">Payable d’ici le</label>
             <input class="input" id="i-dueOn" name="dueOn" type="date">
           </div>
+        </div>
+        <div class="field" data-field="workEndOn">
+          <label for="i-workEndOn">Fin des travaux</label>
+          <input class="input" id="i-workEndOn" name="workEndOn" type="date">
+          <span class="hint">Le jour où les travaux sont terminés. Sert au Bouclier Paiement : délais de l’hypothèque légale.</span>
         </div>
         <div class="form-row">
           <div class="field" data-field="clientEmail">
@@ -321,6 +344,28 @@
       </div>
       <p class="hint msg-context">Vérifie que ton client accepte d'être contacté par ce moyen. Rien n'est envoyé sans toi.</p>
     </div>
+  </dialog>
+
+  <!-- Bibliothèque -->
+  <dialog class="sheet" id="catalogDialog" aria-labelledby="catalogTitle">
+    <div class="sheet-head">
+      <h2 id="catalogTitle">Bibliothèque</h2>
+      <button class="close-x" type="button" data-close aria-label="Fermer">×</button>
+    </div>
+    <div class="sheet-tabs" role="tablist" aria-label="Bibliothèque">
+      <button type="button" role="tab" data-cat-tab="pick" aria-selected="true">Choisir</button>
+      <button type="button" role="tab" data-cat-tab="manage" aria-selected="false">Gérer les prix</button>
+    </div>
+    <div class="sheet-body" id="catalogBody"></div>
+  </dialog>
+
+  <!-- Faire signer ici -->
+  <dialog class="sheet sign-sheet" id="signDialog" aria-labelledby="signTitle">
+    <div class="sheet-head">
+      <h2 id="signTitle">Faire signer</h2>
+      <button class="close-x" type="button" data-close aria-label="Fermer">×</button>
+    </div>
+    <div class="sheet-body" id="signBody"></div>
   </dialog>
 
   <!-- Compte -->

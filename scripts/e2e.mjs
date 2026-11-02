@@ -356,6 +356,136 @@ async function main() {
   check('facture = options retenues', r.status === 201 && r.data.invoice.total === 1494.68 && r.data.invoice.items.length === 2
     && r.data.invoice.items.every((it) => it.optional === false), r.data.invoice);
 
+
+  // --- Bibliothèque, coûts privés (v2.4) ---
+  r = await a.req('POST', '/api/catalog', { kind: 'item', name: '', price: 10 });
+  check('article sans nom', r.status === 400 && r.data.error.field === 'name', r.data);
+  r = await a.req('POST', '/api/catalog', { kind: 'item', name: 'Gypse 1/2 po', price: 'abc' });
+  check('article prix invalide', r.status === 400 && r.data.error.field === 'price', r.data);
+  r = await a.req('POST', '/api/catalog', { kind: 'item', name: 'Gypse 1/2 po', category: 'Matériaux', unit: 'feuille', price: '24,50', cost: '15' });
+  const gypse = r.data.item;
+  check('article créé', r.status === 201 && gypse.price === 24.5 && gypse.cost === 15 && gypse.unit === 'feuille' && gypse.kind === 'item', r.data);
+  r = await a.req('POST', '/api/catalog', { kind: 'item', name: 'Main-d’œuvre', category: 'Main-d’œuvre', unit: 'h', price: 75, cost: 40 });
+  const mo = r.data.item;
+  r = await a.req('POST', '/api/catalog', { kind: 'package', name: 'Salle de bain standard', lines: [] });
+  check('forfait vide refusé', r.status === 400 && r.data.error.field === 'lines', r.data);
+  r = await a.req('POST', '/api/catalog', { kind: 'package', name: 'Salle de bain standard', category: 'Forfaits', lines: [
+    { description: 'Gypse 1/2 po', qty: 20, unit: 'feuille', unitPrice: 24.5, unitCost: 15, itemId: gypse.id },
+    { description: 'Main-d’œuvre', qty: '12,5', unit: 'h', unitPrice: 75, unitCost: 40, itemId: mo.id },
+    { description: 'Ventilateur silencieux', qty: 1, unitPrice: 300, optional: true },
+  ] });
+  const pkg = r.data.item;
+  check('forfait créé', r.status === 201 && pkg.kind === 'package' && pkg.lines.length === 3 && pkg.lines[1].qty === 12.5
+    && pkg.lines[0].unitCost === 15 && pkg.lines[0].itemId === gypse.id && pkg.lines[0].total === 490 && pkg.lines[2].optional === true, r.data);
+  r = await b.req('GET', '/api/catalog'); check('B ne voit pas la bibliothèque de A', r.status === 200 && r.data.catalog.length === 0, r.data);
+  r = await b.req('PUT', `/api/catalog/${gypse.id}`, { kind: 'item', name: 'Pirate', price: 1 }); check('B ne modifie pas l’article de A', r.status === 404, r.status);
+  r = await b.req('DELETE', `/api/catalog/${gypse.id}`); check('B ne supprime pas l’article de A', r.status === 404, r.status);
+  r = await b.req('POST', `/api/catalog/${gypse.id}/use`, {}); check('B n’utilise pas l’article de A', r.status === 404, r.status);
+  await a.req('POST', `/api/catalog/${mo.id}/use`, {});
+  await a.req('POST', `/api/catalog/${mo.id}/use`, {});
+  r = await a.req('GET', '/api/catalog');
+  check('plus utilisés en tête', r.data.catalog[0].id === mo.id && r.data.catalog[0].useCount === 2 && r.data.catalog.length === 3, r.data.catalog.map((c) => c.name));
+  r = await a.req('PUT', `/api/catalog/${gypse.id}`, { kind: 'package', name: 'X', lines: [{ description: 'a', qty: 1, unitPrice: 1 }] });
+  check('un article ne devient pas forfait', r.status === 400, r.data);
+  r = await a.req('PUT', `/api/catalog/${pkg.id}`, { kind: 'package', name: 'SDB standard', category: 'Forfaits', lines: pkg.lines.slice(0, 2) });
+  check('forfait modifié', r.status === 200 && r.data.item.name === 'SDB standard' && r.data.item.lines.length === 2, r.data);
+  r = await a.req('POST', '/api/catalog/adjust', { category: 'Matériaux', percent: 0 });
+  check('ajustement 0 % refusé', r.status === 400 && r.data.error.field === 'percent', r.data);
+  r = await a.req('POST', '/api/catalog/adjust', { category: 'Matériaux', percent: '8' });
+  check('ajustement +8 %', r.status === 200 && r.data.updated === 1, r.data);
+  r = await a.req('GET', '/api/catalog');
+  const g2 = r.data.catalog.find((c) => c.id === gypse.id);
+  const mo2 = r.data.catalog.find((c) => c.id === mo.id);
+  check('prix et coût ajustés, autre catégorie intacte', g2.price === 26.46 && g2.cost === 16.2 && mo2.price === 75 && mo2.cost === 40, [g2, mo2]);
+  r = await a.req('DELETE', `/api/catalog/${pkg.id}`); check('forfait supprimé', r.status === 200, r.data);
+
+  r = await a.req('POST', '/api/quotes', { client: 'Coût Privé', project: 'Sous-sol', sentOn: today, taxes: true,
+    items: [{ description: 'Gypse', qty: 10, unitPrice: 26.46, unitCost: '16,20' }, { description: 'Pose', qty: 8, unit: 'h', unitPrice: 75, unitCost: 'abc' }] });
+  check('coût invalide', r.status === 400 && r.data.error.field === 'items.1.unitCost', r.data);
+  r = await a.req('POST', '/api/quotes', { client: 'Coût Privé', project: 'Sous-sol', sentOn: today, taxes: true, subcontract: true,
+    validUntil: plusDays(30), items: [{ description: 'Gypse', qty: 10, unitPrice: 26.46, unitCost: '16,20', itemId: gypse.id },
+      { description: 'Pose', qty: 8, unit: 'h', unitPrice: 75, unitCost: 40 }] });
+  const cq = r.data.quote;
+  check('coûts gardés pour l’entrepreneur', r.status === 201 && cq.items[0].unitCost === 16.2 && cq.items[1].unitCost === 40
+    && cq.items[0].itemId === gypse.id && cq.subcontract === true && cq.amount === 994.07, cq);
+  r = await a.req('POST', `/api/quotes/${cq.id}/share`, {});
+  const ctok = r.data.quote.shareToken;
+  r = await visitor.req('GET', `/api/public/quotes/${ctok}`);
+  const ctext = JSON.stringify(r.data);
+  check('coût jamais montré au client', r.status === 200 && !ctext.includes('unitCost') && !ctext.includes('16.2')
+    && !ctext.includes('itemId') && !ctext.includes(gypse.id) && !ctext.includes('subcontract'), ctext.slice(0, 300));
+
+  // --- Signature sur place, acompte automatique (v2.5) ---
+  const bizBase = { businessPhone: '514 555-0199', rbqNumber: '5678-1234-01', paymentInstructions: 'Virement Interac à paiement@renosjs.ca', invoiceDueDays: 30 };
+  r = await a.req('PATCH', '/api/me', { displayName: 'Jean-Sébastien', company: 'Rénos JS', business: { ...bizBase, depositPct: 150 } });
+  check('acompte invalide', r.status === 400 && r.data.error.field === 'depositPct', r.data);
+  r = await a.req('PATCH', '/api/me', { displayName: 'Jean-Sébastien', company: 'Rénos JS', business: { ...bizBase, marginFloorPct: '95' } });
+  check('plancher de marge invalide', r.status === 400 && r.data.error.field === 'marginFloorPct', r.data);
+  r = await a.req('PATCH', '/api/me', { displayName: 'Jean-Sébastien', company: 'Rénos JS', business: { ...bizBase, depositPct: '30', marginFloorPct: 20 } });
+  check('profil acompte et marge', r.status === 200 && r.data.user.business.depositPct === 30 && r.data.user.business.marginFloorPct === 20, r.data);
+
+  const SIG = `data:image/png;base64,iVBORw0KGgo${'A'.repeat(400)}`;
+  r = await a.req('POST', `/api/quotes/${cq.id}/sign`, { name: 'Coût Privé', confirm: true });
+  check('signature requise sur place', r.status === 400 && r.data.error.field === 'signature', r.data);
+  r = await a.req('POST', `/api/quotes/${cq.id}/sign`, { name: 'Coût Privé', confirm: true, signature: 'data:image/jpeg;base64,AAAA' });
+  check('signature invalide', r.status === 400 && r.data.error.field === 'signature', r.data);
+  r = await a.req('POST', `/api/quotes/${cq.id}/sign`, { name: 'Coût Privé', signature: SIG });
+  check('sur place sans case', r.status === 400 && r.data.error.field === 'confirm', r.data);
+  r = await b.req('POST', `/api/quotes/${cq.id}/sign`, { name: 'Pirate', confirm: true, signature: SIG });
+  check('B ne fait pas signer A', r.status === 404, r.status);
+  r = await a.req('POST', `/api/quotes/${cq.id}/sign`, { name: 'Coût Privé', confirm: true, signature: SIG, atHome: true }, { origin: 'https://evil.example' });
+  check('signature sur place CSRF', r.status === 403, r.status);
+  r = await a.req('POST', `/api/quotes/${cq.id}/sign`, { name: 'Coût Privé', confirm: true, signature: SIG, atHome: true });
+  const signed = r.data.quote;
+  const dep = r.data.deposit;
+  check('signée sur place', r.status === 200 && signed.status === 'accepted' && signed.signedInPerson === true && signed.signedAtHome === true
+    && signed.hasSignature === true && signed.decidedByName === 'Coût Privé' && signed.followUpOn === null, r.data);
+  check('acompte créé à la signature', dep && dep.kind === 'deposit' && dep.depositQuoteId === cq.id && dep.quoteId === null && dep.subtotal === 259.38
+    && dep.taxes === true && dep.total === 298.22 && dep.dueOn === dep.issuedOn && dep.items[0].description.includes('30 %'), dep);
+  r = await a.req('POST', `/api/quotes/${cq.id}/sign`, { name: 'Coût Privé', confirm: true, signature: SIG });
+  check('pas de deuxième signature', r.status === 409, r.data);
+  r = await visitor.req('GET', `/api/public/quotes/${ctok}`);
+  check('signature sur la copie du client', r.data.quote.signature === SIG && r.data.quote.signedInPerson === true
+    && r.data.quote.status === 'accepted' && !JSON.stringify(r.data).includes('16.2'), r.data.quote.status);
+  r = await a.req('POST', `/api/quotes/${cq.id}/deposit`, {});
+  check('acompte unique', r.status === 200 && r.data.created === false && r.data.invoice.id === dep.id, r.data);
+  r = await a.req('POST', `/api/quotes/${simpleId}/deposit`, {});
+  check('pas d’acompte avant acceptation', r.status === 409, r.data);
+
+  r = await a.req('POST', `/api/quotes/${cq.id}/invoice`, {});
+  const fin = r.data.invoice;
+  check('facture finale moins l’acompte', r.status === 201 && fin.kind === 'standard' && fin.depositApplied === 259.38 && fin.depositRef === dep.number
+    && fin.subtotal === 864.6 && fin.gst === 30.26 && fin.qst === 60.37 && fin.total === 695.85 && fin.items.every((it) => it.unitCost === undefined), fin);
+  check('acompte + solde = total signé', Math.round((dep.total + fin.total) * 100) === Math.round(signed.amount * 100), [dep.total, fin.total, signed.amount]);
+  r = await a.req('PUT', `/api/invoices/${fin.id}`, { ...fin, discount: 700 });
+  check('rabais + acompte > sous-total', r.status === 400 && r.data.error.field === 'discount', r.data);
+  r = await a.req('PUT', `/api/invoices/${fin.id}`, { ...fin, workEndOn: '2026-02-31' });
+  check('fin des travaux invalide', r.status === 400 && r.data.error.field === 'workEndOn', r.data);
+  r = await a.req('PUT', `/api/invoices/${fin.id}`, { ...fin, workEndOn: today });
+  check('fin des travaux, acompte conservé', r.status === 200 && r.data.invoice.workEndOn === today && r.data.invoice.total === 695.85
+    && r.data.invoice.depositApplied === 259.38, r.data.invoice);
+  r = await a.req('POST', `/api/invoices/${fin.id}/share`, {});
+  r = await visitor.req('GET', `/api/public/invoices/${r.data.invoice.shareToken}`);
+  check('client voit l’acompte déduit', r.data.invoice.depositApplied === 259.38 && r.data.invoice.depositRef === dep.number && r.data.invoice.total === 695.85, r.data.invoice);
+
+  r = await a.req('POST', '/api/quotes', { client: 'En Ligne', project: 'Clôture', sentOn: today, items: [{ description: 'Clôture', qty: 1, unitPrice: 2000 }], taxes: false });
+  const eid = r.data.quote.id;
+  r = await a.req('POST', `/api/quotes/${eid}/share`, {});
+  const etok = r.data.quote.shareToken;
+  r = await visitor.req('POST', `/api/public/quotes/${etok}/decision`, { decision: 'accept', name: 'En Ligne', confirm: true, signature: 'pas-une-image' });
+  check('signature en ligne invalide', r.status === 400 && r.data.error.field === 'signature', r.data);
+  r = await visitor.req('POST', `/api/public/quotes/${etok}/decision`, { decision: 'accept', name: 'En Ligne', confirm: true, signature: SIG });
+  check('acceptée et signée en ligne', r.status === 200 && r.data.quote.signature === SIG && r.data.quote.signedInPerson === false, r.data.quote);
+  r = await a.req('GET', '/api/invoices');
+  const edep = r.data.invoices.find((x) => x.depositQuoteId === eid);
+  check('acompte auto après acceptation en ligne', edep && edep.total === 600 && edep.taxes === false && edep.status === 'unpaid', edep);
+  r = await a.req('PUT', `/api/quotes/${eid}`, { client: 'En Ligne', project: 'Clôture', sentOn: today, status: 'pending', items: [{ description: 'Clôture', qty: 1, unitPrice: 2000 }] });
+  check('remise en attente efface la signature', r.status === 200 && r.data.quote.hasSignature === false && r.data.quote.signedInPerson === false, r.data.quote);
+
+  r = await a.req('PUT', `/api/quotes/${cq.id}`, { ...signed, status: 'accepted', denouncedOn: today });
+  check('dénonciation notée', r.status === 200 && r.data.quote.denouncedOn === today && r.data.quote.subcontract === true
+    && r.data.quote.items[0].unitCost === 16.2, r.data.quote);
+
   // --- Connexion ---
   r = await a.req('POST', '/api/auth/logout', {}); check('logout', r.status === 200 && a.cookie === '');
   r = await a.req('GET', '/api/me'); check('après logout 401', r.status === 401);
@@ -423,7 +553,7 @@ async function main() {
   r = await a.req('GET', '/api/admin/metrics'); check('admin sans jeton 404', r.status === 404);
   r = await a.req('GET', '/api/admin/metrics', undefined, { headers: { authorization: 'Bearer mauvais' } }); check('admin mauvais jeton 404', r.status === 404);
   r = await a.req('GET', '/api/admin/metrics', undefined, { headers: { authorization: `Bearer ${ADMIN}` } });
-  check('admin metrics', r.status === 200 && r.data.invoices.count === 3 && r.data.funnel.users >= 2 && r.data.funnel.activatedUsers >= 1 && r.data.events30d.signup >= 2, r.data);
+  check('admin metrics', r.status === 200 && r.data.invoices.count === 6 && r.data.funnel.users >= 2 && r.data.funnel.activatedUsers >= 1 && r.data.events30d.signup >= 2, r.data);
   r = await a.req('GET', '/api/admin/users', undefined, { headers: { authorization: `Bearer ${ADMIN}` } });
   check('admin users', r.status === 200 && r.data.users.some((u) => u.email === email), r.data);
 

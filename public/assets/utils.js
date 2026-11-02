@@ -13,6 +13,22 @@ export function addDays(iso, n) {
   d.setDate(d.getDate() + n);
   return toISO(d);
 }
+/** Même jour n mois plus tard (fin de mois si le jour n'existe pas). */
+export function addMonths(iso, n) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  const target = new Date(y, m - 1 + n, 1);
+  const last = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(d, last));
+  return toISO(target);
+}
+/**
+ * Bouclier Paiement : délais de l'hypothèque légale de la construction, comptés depuis la fin des travaux.
+ * Inscription dans les 30 jours ; sans préavis d'exercice (ou action) dans les 6 mois, l'hypothèque s'éteint.
+ * Rappel de dates seulement : un avocat ou un notaire confirme pour chaque dossier.
+ */
+export function shieldDates(workEndOn) {
+  return { lienBy: addDays(workEndOn, 30), preavisBy: addMonths(workEndOn, 6) };
+}
 export function daysBetween(fromIso, toIso) {
   return Math.round((parseISO(toIso) - parseISO(fromIso)) / 86_400_000);
 }

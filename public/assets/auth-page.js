@@ -2,6 +2,8 @@ import { api } from './store.js';
 import { h } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
+// Nouvelle session : les données hors ligne d'un autre compte ne doivent jamais s'afficher.
+const clearOfflineCache = () => ('caches' in window ? caches.delete('sp-api').catch(() => false) : Promise.resolve(false));
 const params = new URLSearchParams(location.search);
 const next = (() => {
   const n = params.get('next') || '/app';
@@ -80,13 +82,14 @@ $('signupForm').addEventListener('submit', (ev) => {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(body.email.trim())) return showError(f, { field: 'email', message: 'Courriel invalide.' });
   if (body.password.length < 8) return showError(f, { field: 'password', message: 'Mot de passe : 8 caractères minimum.' });
   if (!body.acceptTerms) return showError(f, { field: 'acceptTerms', message: 'Accepte les conditions pour continuer.' });
-  submit(f, '/api/auth/signup', body, () => location.assign('/app?bienvenue=1'));
+  submit(f, '/api/auth/signup', body, () => clearOfflineCache().then(() => location.assign('/app?bienvenue=1')));
 });
 
 $('loginForm').addEventListener('submit', (ev) => {
   ev.preventDefault();
   const f = ev.target;
-  submit(f, '/api/auth/login', { email: f.elements.email.value, password: f.elements.password.value }, () => location.assign(next));
+  submit(f, '/api/auth/login', { email: f.elements.email.value, password: f.elements.password.value },
+    () => clearOfflineCache().then(() => location.assign(next)));
 });
 
 $('resetForm').addEventListener('submit', (ev) => {

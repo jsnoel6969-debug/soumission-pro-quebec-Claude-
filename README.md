@@ -1,7 +1,21 @@
-# Soumission Pro v2.3
+# Soumission Pro v2.6
 
 Du prototype local (données dans un seul navigateur, aucun paiement) à un SaaS qui encaisse :
 comptes, synchronisation cellulaire/ordinateur, essai gratuit, abonnement Stripe, export, suppression de compte, tableau de bord KPI.
+
+**v2.6 (1er nov. 2026) — terrain et protection du paiement** (migration `0004_terrain.sql`)
+- **Écran Aujourd'hui** et barre d'onglets en bas (Aujourd'hui · Soumissions · Factures · Profil) : relances, clients chauds,
+  acomptes à encaisser, factures en retard, paiements à protéger, une action par carte.
+- **Bibliothèque** : articles (prix de vente + coût privé) et forfaits, choisis en un toucher ; « Enregistrer comme forfait » ;
+  ajustement en masse par catégorie (« Bois +8 % », prix et coût ensemble). Bouton **Dupliquer**. Nouvelle soumission détaillée d'office.
+- **Marge privée** en direct dans l'éditeur (coût par ligne, plancher de marge du profil). Jamais envoyée au client (test e2e).
+- **Faire signer ici** : le client choisit ses options et signe au doigt sur le téléphone de l'entrepreneur (`POST /api/quotes/:id/sign`).
+  Signature facultative aussi sur le lien client. Signée au domicile : rappel du délai d'annulation possible de 10 jours.
+- **Facture d'acompte** automatique à l'acceptation (pourcentage du profil) ; la facture finale déduit l'acompte avant taxes.
+- **Bouclier Paiement** : date de fin des travaux sur la facture → délais de l'hypothèque légale (30 jours, 6 mois),
+  alerte dans Aujourd'hui, dossier imprimable `/dossier?f=<id>`. Sous-traitance : rappel de dénoncer le contrat.
+- **Hors ligne** : service worker (`public/sw.js`) qui garde l'app et les dernières données ; nouvelles soumissions,
+  modifications et signatures sans réseau attendent dans une boîte d'envoi et partent au retour du réseau.
 
 **v2.3 (1er nov. 2026) — options (upsell)**
 - Une ligne peut être marquée « Option » : elle n'entre pas dans le prix de base. Sur sa page, le client coche les options
@@ -50,7 +64,7 @@ soumission-pro/
 ├── legacy/                  code du staging du 25 oct. récupéré (base du futur forfait Pro)
 └── scripts/
     ├── local-server.mjs       serveur de test sans wrangler (Node 22 + SQLite)
-    └── e2e.mjs                290 vérifications API (152 avec Stripe, 138 sans)
+    └── e2e.mjs                378 vérifications API (196 avec Stripe, 182 sans)
 ```
 
 ---

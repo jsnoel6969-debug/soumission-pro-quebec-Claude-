@@ -167,6 +167,7 @@ export async function deleteAccount(request, env) {
   }
   await env.DB.batch([
     env.DB.prepare('DELETE FROM invoices WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM catalog WHERE user_id = ?').bind(user.id),
     env.DB.prepare('DELETE FROM quotes WHERE user_id = ?').bind(user.id),
     env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id),
     env.DB.prepare('DELETE FROM password_resets WHERE user_id = ?').bind(user.id),

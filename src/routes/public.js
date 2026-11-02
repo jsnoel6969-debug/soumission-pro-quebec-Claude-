@@ -2,15 +2,13 @@
 import { HttpError, json, readJson, clientIp } from '../lib/http.js';
 import { getSessionUser } from '../lib/session.js';
 import { rateLimit, track } from '../lib/guards.js';
-import { itemsToJson, multiline, parseItems, str } from '../lib/validate.js';
+import { itemsToJson, multiline, parseItems, signature as vSignature, str, MAX_SIGNATURE } from '../lib/validate.js';
 import { computeTotals } from '../../public/assets/money.js';
+import { TOKEN_RE, todayToronto } from '../lib/dates.js';
+import { ensureDeposit } from './invoices.js';
 
-export const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/;
+export { TOKEN_RE, todayToronto };
 const VIEW_WINDOW_MS = 30 * 60 * 1000; // une « ouverture » = une visite, pas chaque rechargement
-
-export function todayToronto(now = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Toronto', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-}
 
 async function findByToken(env, token) {
   if (!TOKEN_RE.test(token)) return null;
@@ -61,6 +59,8 @@ function payload(row, isOwner) {
       decidedOnline: Boolean(row.decided_online_at),
       decidedAt: row.decided_online_at || null,
       decidedByName: row.decided_by_name || '',
+      signedInPerson: Boolean(row.signed_in_person),
+      signature: row.status === 'accepted' && row.signature_png ? row.signature_png : null,
     },
     business: {
       name: row.company || row.display_name || 'Entrepreneur',
@@ -95,39 +95,30 @@ export async function getPublicQuote(request, env, token) {
   return json(payload(row, isOwner), 200, { 'x-robots-tag': 'noindex, nofollow' });
 }
 
-export async function decidePublicQuote(request, env, token) {
-  await rateLimit(env, `pub-decide:${clientIp(request)}`, 20, 3600);
-  const body = await readJson(request, 6_000);
-  const decision = body.decision;
-  if (decision !== 'accept' && decision !== 'refuse') throw new HttpError(400, 'validation_error', 'Choix invalide.');
-
-  const row = await findByToken(env, token);
-  if (!row) throw new HttpError(404, 'not_found', NOT_FOUND);
-  const viewer = await getSessionUser(env, request);
-  if (viewer && viewer.id === row.user_id) {
-    throw new HttpError(403, 'owner', 'C’est ta propre soumission : seul ton client peut y répondre. Pour tester, ouvre le lien dans une fenêtre privée.');
+/** Nom, confirmation, options et signature d'une acceptation (en ligne ou sur place). */
+export function parseAcceptance(body, { requireSignature = false } = {}) {
+  const name = str(body.name, 'name', { max: 120, required: true, label: 'Le nom' });
+  if (name.length < 2) throw new HttpError(400, 'validation_error', 'Le nom complet est requis.', { field: 'name' });
+  if (body.confirm !== true) {
+    throw new HttpError(400, 'validation_error', 'Cochez la case pour confirmer l’acceptation.', { field: 'confirm' });
   }
-  if (row.status !== 'pending') throw new HttpError(409, 'already_decided', 'Cette soumission a déjà reçu une réponse.');
-  if (row.valid_until && row.valid_until < todayToronto()) {
-    throw new HttpError(409, 'expired', 'Cette soumission est expirée. Communique avec l’entrepreneur pour une mise à jour.');
-  }
+  return {
+    name,
+    options: Array.isArray(body.options) ? body.options : [],
+    signature: vSignature(body.signature, { required: requireSignature }),
+  };
+}
 
-  const accept = decision === 'accept';
-  const name = str(body.name, 'name', { max: 120, required: accept, label: 'Ton nom' });
-  if (accept && name.length < 2) throw new HttpError(400, 'validation_error', 'Ton nom est requis.', { field: 'name' });
-  if (accept && body.confirm !== true) {
-    throw new HttpError(400, 'validation_error', 'Coche la case pour confirmer ton acceptation.', { field: 'confirm' });
-  }
-  const message = multiline(body.message, 'message', { max: 1000, label: 'Le message' }) || null;
-  const now = Date.now();
-
-  // Options choisies par le client : elles s'ajoutent au prix de base, taxes recalculées par le même module.
+/**
+ * Accepte une soumission en attente : options choisies (totaux recalculés par money.js), version figée,
+ * signature. Retourne false si quelqu'un a répondu entre-temps.
+ */
+export async function acceptQuote(env, row, { name, options = [], signature = null, inPerson = false, atHome = false, message = null }) {
   let accepted = row;
   const items = parseItems(row.items_json);
-  if (accept && items && items.some((it) => it.optional)) {
-    const raw = Array.isArray(body.options) ? body.options : [];
+  if (items && items.some((it) => it.optional)) {
     const chosen = new Set();
-    for (const v of raw) {
+    for (const v of options) {
       if (!Number.isInteger(v) || !items[v] || !items[v].optional) {
         throw new HttpError(400, 'validation_error', 'Option invalide.', { field: 'options' });
       }
@@ -138,22 +129,61 @@ export async function decidePublicQuote(request, env, token) {
     if (t.error) throw new HttpError(400, 'validation_error', 'Total invalide.', { field: 'options' });
     accepted = {
       ...row,
-      items_json: JSON.stringify(lines),
+      items_json: JSON.stringify(lines.map((l, i) => ({ ...l, lineCents: t.lineTotals[i] }))),
       subtotal_cents: t.subtotalCents, gst_cents: t.gstCents, qst_cents: t.qstCents, amount_cents: t.totalCents,
     };
   }
-  const snapshot = accept ? JSON.stringify(documentOf(accepted)) : null;
-
+  const now = Date.now();
   const res = await env.DB.prepare(
-    `UPDATE quotes SET status = ?, decided_online_at = ?, decided_by_name = ?, client_message = ?, accepted_snapshot = ?,
-       items_json = ?, subtotal_cents = ?, gst_cents = ?, qst_cents = ?, amount_cents = ?, follow_up_on = NULL, updated_at = ?
+    `UPDATE quotes SET status = 'accepted', decided_online_at = ?, decided_by_name = ?, client_message = ?, accepted_snapshot = ?,
+       items_json = ?, subtotal_cents = ?, gst_cents = ?, qst_cents = ?, amount_cents = ?, follow_up_on = NULL,
+       signature_png = ?, signed_in_person = ?, signed_at_home = ?, updated_at = ?
      WHERE id = ? AND status = 'pending'`
-  ).bind(accept ? 'accepted' : 'refused', now, name || null, message, snapshot,
+  ).bind(now, name, message, JSON.stringify(documentOf(accepted)),
     accepted.items_json ?? null, accepted.subtotal_cents ?? null, accepted.gst_cents || 0, accepted.qst_cents || 0, accepted.amount_cents,
-    now, row.id).run();
-  if (!res.meta || res.meta.changes !== 1) throw new HttpError(409, 'already_decided', 'Cette soumission a déjà reçu une réponse.');
+    signature, inPerson ? 1 : 0, inPerson && atHome ? 1 : 0, now, row.id).run();
+  return Boolean(res.meta && res.meta.changes === 1);
+}
 
-  await track(env, accept ? 'quote_accepted_online' : 'quote_refused_online', row.user_id);
+export async function decidePublicQuote(request, env, token) {
+  await rateLimit(env, `pub-decide:${clientIp(request)}`, 20, 3600);
+  const body = await readJson(request, MAX_SIGNATURE + 6_000);
+  const decision = body.decision;
+  if (decision !== 'accept' && decision !== 'refuse') throw new HttpError(400, 'validation_error', 'Choix invalide.');
+
+  const row = await findByToken(env, token);
+  if (!row) throw new HttpError(404, 'not_found', NOT_FOUND);
+  const viewer = await getSessionUser(env, request);
+  if (viewer && viewer.id === row.user_id) {
+    throw new HttpError(403, 'owner', 'C’est ta propre soumission : seul ton client peut y répondre. Pour la faire signer devant toi, utilise « Faire signer ici » dans l’app.');
+  }
+  if (row.status !== 'pending') throw new HttpError(409, 'already_decided', 'Cette soumission a déjà reçu une réponse.');
+  if (row.valid_until && row.valid_until < todayToronto()) {
+    throw new HttpError(409, 'expired', 'Cette soumission est expirée. Communique avec l’entrepreneur pour une mise à jour.');
+  }
+  const message = multiline(body.message, 'message', { max: 1000, label: 'Le message' }) || null;
+
+  if (decision === 'accept') {
+    const a = parseAcceptance(body);
+    const ok = await acceptQuote(env, row, { ...a, message });
+    if (!ok) throw new HttpError(409, 'already_decided', 'Cette soumission a déjà reçu une réponse.');
+    await track(env, 'quote_accepted_online', row.user_id);
+    if (a.signature) await track(env, 'quote_signed_online', row.user_id);
+    const owner = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(row.user_id).first();
+    if (owner) {
+      try { await ensureDeposit(env, owner, row.id); } catch (err) { console.error('deposit failed', err); }
+    }
+    return json(payload(await findByToken(env, token), false));
+  }
+
+  const name = str(body.name, 'name', { max: 120, label: 'Le nom' }) || null;
+  const now = Date.now();
+  const res = await env.DB.prepare(
+    `UPDATE quotes SET status = 'refused', decided_online_at = ?, decided_by_name = ?, client_message = ?, follow_up_on = NULL, updated_at = ?
+     WHERE id = ? AND status = 'pending'`
+  ).bind(now, name, message, now, row.id).run();
+  if (!res.meta || res.meta.changes !== 1) throw new HttpError(409, 'already_decided', 'Cette soumission a déjà reçu une réponse.');
+  await track(env, 'quote_refused_online', row.user_id);
   return json(payload(await findByToken(env, token), false));
 }
 

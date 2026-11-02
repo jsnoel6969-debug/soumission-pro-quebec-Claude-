@@ -6,6 +6,7 @@ import * as billing from './routes/billing.js';
 import * as admin from './routes/admin.js';
 import * as pub from './routes/public.js';
 import * as invoices from './routes/invoices.js';
+import * as catalog from './routes/catalog.js';
 
 /** Config publique lue par le site (prix, essai, places fondateur réelles). */
 async function publicConfig(request, env) {
@@ -46,6 +47,15 @@ const routes = [
   ['POST', new RegExp(`^/api/quotes/${ID}/follow-up$`), quotes.markFollowUp],
   ['POST', new RegExp(`^/api/quotes/${ID}/share$`), quotes.shareQuote],
   ['DELETE', new RegExp(`^/api/quotes/${ID}/share$`), quotes.unshareQuote],
+  ['POST', new RegExp(`^/api/quotes/${ID}/sign$`), quotes.signInPerson],
+  ['GET', new RegExp(`^/api/quotes/${ID}/signature$`), quotes.getSignature],
+  ['POST', new RegExp(`^/api/quotes/${ID}/deposit$`), invoices.createDeposit],
+  ['GET', /^\/api\/catalog$/, catalog.listCatalog],
+  ['POST', /^\/api\/catalog$/, catalog.createCatalog],
+  ['POST', /^\/api\/catalog\/adjust$/, catalog.adjustPrices],
+  ['PUT', new RegExp(`^/api/catalog/${ID}$`), catalog.updateCatalog],
+  ['DELETE', new RegExp(`^/api/catalog/${ID}$`), catalog.deleteCatalog],
+  ['POST', new RegExp(`^/api/catalog/${ID}/use$`), catalog.useCatalog],
   ['GET', /^\/api\/public\/quotes\/([A-Za-z0-9_-]{20,64})$/, pub.getPublicQuote],
   ['POST', /^\/api\/public\/quotes\/([A-Za-z0-9_-]{20,64})\/decision$/, pub.decidePublicQuote],
   ['POST', new RegExp(`^/api/quotes/${ID}/invoice$`), invoices.createFromQuote],

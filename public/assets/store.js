@@ -89,12 +89,17 @@ function moneyFields(q) {
   const lines = items.map((it) => ({
     description: String(it.description).trim(), unit: String(it.unit || '').trim(),
     qtyMilli: toQtyMilli(it.qty), unitCents: toCents(it.unitPrice), optional: it.optional === true,
+    costCents: it.unitCost === undefined || it.unitCost === null || String(it.unitCost).trim() === '' ? null : toCents(it.unitCost),
+    itemId: it.itemId || null,
   }));
   const discountCents = q.discount === '' || q.discount === null || q.discount === undefined ? 0 : toCents(q.discount);
   const t = computeTotals(lines.map((l) => ({ ...l, excluded: l.optional })), discountCents, q.taxes === true);
   return {
     detailed: true,
-    items: lines.map((l, i) => ({ description: l.description, unit: l.unit, qty: l.qtyMilli / 1000, unitPrice: l.unitCents / 100, total: t.lineTotals[i] / 100, optional: l.optional })),
+    items: lines.map((l, i) => ({
+      description: l.description, unit: l.unit, qty: l.qtyMilli / 1000, unitPrice: l.unitCents / 100, total: t.lineTotals[i] / 100, optional: l.optional,
+      ...(Number.isInteger(l.costCents) ? { unitCost: l.costCents / 100 } : {}), ...(l.itemId ? { itemId: l.itemId } : {}),
+    })),
     subtotal: t.subtotalCents / 100, discount: t.discountCents / 100, taxes: q.taxes === true,
     gst: t.gstCents / 100, qst: t.qstCents / 100, amount: t.totalCents / 100,
   };
@@ -116,7 +121,15 @@ function cleanLocal(q) {
     clientAddress: (q.clientAddress || '').trim(),
     notes: (q.notes || '').trim(),
     terms: (q.terms || '').trim(),
+    subcontract: q.subcontract === true,
+    denouncedOn: q.denouncedOn || null,
   };
+}
+
+/** Aperçu local d'une soumission pas encore envoyée au serveur (brouillon hors ligne). */
+export function previewQuote(data, { id, createdAt = Date.now() } = {}) {
+  return { ...EMPTY_EXTRAS, ...cleanLocal(data), id, number: '', followUpCount: 0, lastFollowUpOn: null,
+    subcontract: data.subcontract === true, denouncedOn: data.denouncedOn || null, createdAt, updatedAt: createdAt };
 }
 
 export class LocalStore {

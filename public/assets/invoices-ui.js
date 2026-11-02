@@ -1,12 +1,12 @@
 // Onglet Factures : liste, encaissements, dialogue facture, paiements, lien client.
 import {
   h, toast, todayISO, addDays, daysBetween, dateLong, relTime, money2, moneyRound, copyText, download,
-  PAYMENT_LABEL, toInvoicesCsv,
+  PAYMENT_LABEL, toInvoicesCsv, shieldDates,
 } from './utils.js';
 import { createLineEditor, toEditable } from './line-editor.js';
 
 const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
-const FIELDS = ['client', 'project', 'discount', 'issuedOn', 'dueOn', 'clientEmail', 'clientPhone', 'clientAddress', 'terms', 'notes'];
+const FIELDS = ['client', 'project', 'discount', 'issuedOn', 'dueOn', 'workEndOn', 'clientEmail', 'clientPhone', 'clientAddress', 'terms', 'notes'];
 
 /**
  * @param {object} ctx  dépendances fournies par app.js
@@ -30,6 +30,21 @@ export function createInvoicesUI(ctx) {
   const linkUrl = (inv) => (inv && inv.shareToken ? `${location.origin}/f/${inv.shareToken}` : '');
   const invoiceFor = (quoteId) => (state.invoices || []).find((x) => x.quoteId === quoteId && x.status !== 'void')
     || (state.invoices || []).find((x) => x.quoteId === quoteId);
+  const depositFor = (quoteId) => (state.invoices || []).find((x) => x.depositQuoteId === quoteId && x.status !== 'void');
+
+  /**
+   * Bouclier Paiement : pour une facture finale impayée avec une date de fin des travaux,
+   * les délais de l'hypothèque légale (rappel de dates, pas un avis juridique).
+   */
+  function shield(inv, today = todayISO()) {
+    if (!inv || inv.kind === 'deposit' || inv.status !== 'unpaid' || !inv.workEndOn) return null;
+    const { lienBy, preavisBy } = shieldDates(inv.workEndOn);
+    const daysToLien = daysBetween(today, lienBy);
+    const daysToPreavis = daysBetween(today, preavisBy);
+    const phase = daysToLien >= 0 ? 'lien' : (daysToPreavis >= 0 ? 'preavis' : 'past');
+    return { lienBy, preavisBy, daysToLien, daysToPreavis, phase, urgent: phase === 'lien' && (daysToLien <= 10 || isOverdue(inv, today)) };
+  }
+  const dossierUrl = (inv) => `/dossier?f=${encodeURIComponent(inv.id)}`;
 
   async function load() {
     state.invoices = ctx.isDemo() ? [] : (await api('/api/invoices')).invoices;
@@ -42,6 +57,7 @@ export function createInvoicesUI(ctx) {
 
   // ---------- Liste ----------
   function statusTag(inv, today) {
+    if (inv.kind === 'deposit' && inv.status === 'unpaid') return h('span', { class: 'tag tag-due' }, 'Acompte à encaisser');
     if (inv.status === 'paid') return h('span', { class: 'tag tag-go' }, `Payée le ${dateLong(inv.paidOn)}`);
     if (inv.status === 'void') return h('span', { class: 'tag tag-stop' }, 'Annulée');
     const d = daysBetween(today, inv.dueOn);
@@ -77,6 +93,7 @@ export function createInvoicesUI(ctx) {
       h('p', { class: 'slip-project' }, inv.project),
       h('div', { class: 'slip-meta' },
         statusTag(inv, today), viewTag(inv),
+        inv.kind === 'deposit' ? h('span', { class: 'tag' }, 'Acompte') : null,
         h('span', { class: 'num' }, `N° ${inv.number}`),
         inv.reminderCount ? h('span', {}, plural(inv.reminderCount, 'rappel envoyé', 'rappels envoyés')) : null),
       buttons);
@@ -187,6 +204,33 @@ export function createInvoicesUI(ctx) {
       ctx.canWrite() ? h('div', { class: 'btn-row' }, h('button', { class: 'btn btn-primary btn-sm', type: 'button', id: 'markPaid', onClick: () => markPaid(inv.id) }, 'Marquer payée')) : null);
   }
 
+  function renderShieldBox(inv) {
+    const box = $('shieldBox');
+    const sh = shield(inv);
+    if (!sh) {
+      box.hidden = inv.kind === 'deposit' || inv.status !== 'unpaid';
+      if (!box.hidden) {
+        box.className = 'shield-box';
+        box.replaceChildren(h('h3', {}, 'Bouclier Paiement'),
+          h('p', {}, 'Inscris la date de fin des travaux plus bas : l’app calcule tes délais pour protéger ton paiement (hypothèque légale de la construction) et te les rappelle.'));
+      }
+      return;
+    }
+    box.hidden = false;
+    box.className = `shield-box ${sh.urgent ? 'is-urgent' : ''}`;
+    const lines = sh.phase === 'lien'
+      ? [h('p', { class: 'shield-key' }, `Inscription de l’hypothèque légale : au plus tard le ${dateLong(sh.lienBy)} (${sh.daysToLien === 0 ? 'aujourd’hui' : `${sh.daysToLien} jours`}).`),
+        h('p', {}, `Ensuite, préavis d’exercice ou action avant le ${dateLong(sh.preavisBy)}, sinon l’hypothèque s’éteint.`)]
+      : sh.phase === 'preavis'
+        ? [h('p', { class: 'shield-key' }, `Délai d’inscription passé le ${dateLong(sh.lienBy)}.`),
+          h('p', {}, `Si l’hypothèque est inscrite : préavis d’exercice ou action avant le ${dateLong(sh.preavisBy)} (${sh.daysToPreavis} jours).`)]
+        : [h('p', { class: 'shield-key' }, `Les délais de l’hypothèque légale sont passés (${dateLong(sh.preavisBy)}).`),
+          h('p', {}, 'Il reste les recours ordinaires : parles-en à un avocat.')];
+    box.replaceChildren(h('h3', {}, 'Bouclier Paiement'), ...lines,
+      h('div', { class: 'btn-row' }, h('a', { class: 'btn btn-ink btn-sm', href: dossierUrl(inv), target: '_blank', rel: 'noopener' }, 'Préparer le dossier')),
+      h('p', { class: 'hint' }, 'Rappel de dates calculées depuis la fin des travaux, pas un avis juridique. Un avocat ou un notaire confirme et fait l’inscription.'));
+  }
+
   function renderLinkBox(inv) {
     const box = $('invLinkBox');
     box.hidden = false;
@@ -222,8 +266,9 @@ export function createInvoicesUI(ctx) {
     editingId = id;
     clearErrors();
     const form = $('invoiceForm');
-    $('invoiceTitle').textContent = `Facture n° ${inv.number}`;
+    $('invoiceTitle').textContent = `${inv.kind === 'deposit' ? 'Facture d’acompte' : 'Facture'} n° ${inv.number}`;
     for (const f of FIELDS) form.elements[f].value = f === 'discount' ? (inv.discount ? String(inv.discount).replace('.', ',') : '') : (inv[f] ?? '');
+    form.querySelector('[data-field="workEndOn"]').hidden = inv.kind === 'deposit';
     form.elements.taxes.checked = inv.taxes;
     const editable = ctx.canWrite() && inv.status === 'unpaid';
     for (const f of FIELDS) form.elements[f].disabled = !editable;
@@ -238,6 +283,7 @@ export function createInvoicesUI(ctx) {
       $('invoiceError').hidden = false;
     }
     renderPayBox(inv);
+    renderShieldBox(inv);
     renderLinkBox(inv);
     if (!$('invoiceDialog').open) $('invoiceDialog').showModal();
     if (focusPayment && $('markPaid')) $('payBox').scrollIntoView({ block: 'start' });
@@ -251,6 +297,7 @@ export function createInvoicesUI(ctx) {
     const sendAfter = Boolean(event.submitter && event.submitter.dataset.send);
     const data = Object.fromEntries(FIELDS.map((f) => [f, form.elements[f].value]));
     data.taxes = form.elements.taxes.checked;
+    data.workEndOn = data.workEndOn || null;
     data.items = editor.cleaned();
     if (!data.items.length) {
       editor.ensureOne();
@@ -347,11 +394,30 @@ export function createInvoicesUI(ctx) {
     editor = createLineEditor({
       listEl: $('invLines'), totalsEl: $('invTotals'), discountInput: form.elements.discount, taxesInput: form.elements.taxes,
       idPrefix: 'inv-line', isWritable: () => ctx.canWrite() && Boolean(find(editingId) && find(editingId).status === 'unpaid'),
+      deduction: () => {
+        const inv = find(editingId);
+        return inv && inv.depositApplied ? { cents: Math.round(inv.depositApplied * 100), label: `Acompte facturé (${inv.depositRef || 'acompte'})` } : null;
+      },
     });
     form.addEventListener('submit', save);
     $('invAddLine').addEventListener('click', () => editor.add());
     $('voidInvoice').addEventListener('click', voidIt);
   }
 
-  return { load, renderView, open, createFromQuote, invoiceFor, find, linkUrl, recordReminder, exportCsv, wire, isOverdue };
+  async function createDeposit(quoteId, pct = null) {
+    if (ctx.isDemo()) { toast('Crée ton compte gratuit pour facturer tes acomptes.'); return null; }
+    if (!ctx.requireWrite()) return null;
+    try {
+      const r = await api(`/api/quotes/${quoteId}/deposit`, { method: 'POST', body: pct ? { pct } : {} });
+      await refresh();
+      toast(r.created ? `Facture d’acompte n° ${r.invoice.number} créée : ${money2(r.invoice.total)}.` : 'Cette soumission a déjà sa facture d’acompte.');
+      open(r.invoice.id);
+      return r.invoice;
+    } catch (e) { ctx.handleError(e); return null; }
+  }
+
+  return {
+    load, renderView, open, createFromQuote, createDeposit, invoiceFor, depositFor, find, linkUrl, recordReminder, exportCsv, wire,
+    isOverdue, slip, shield, dossierUrl, remind,
+  };
 }

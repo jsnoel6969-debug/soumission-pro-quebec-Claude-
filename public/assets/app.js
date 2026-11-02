@@ -1,11 +1,14 @@
-import { api, ApiStore, LocalStore } from './store.js';
+import { api, ApiStore, LocalStore, previewQuote } from './store.js';
 import {
-  h, toast, todayISO, addDays, daysBetween, dateLong, relDays, relTime, money, money2, moneyRound, fold, ordinal,
+  h, toast, todayISO, toISO, addDays, daysBetween, dateLong, relDays, relTime, money, money2, moneyRound, fold, ordinal,
   copyText, download, toCsv, toJsonExport, normalizeImported, detectLocalQuotes, validateQuote,
 } from './utils.js';
 import { createLineEditor, decimalText, emptyLine, toEditable } from './line-editor.js';
 import { buildMessage, buildInvoiceMessage, mailtoHref, smsHref, suggestedNextDays } from './templates.js';
 import { createInvoicesUI } from './invoices-ui.js';
+import { createCatalogUI } from './catalog-ui.js';
+import { createSignUI } from './sign-ui.js';
+import { createOutbox, registerServiceWorker, clearOfflineData, isTmpId } from './offline.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -28,9 +31,13 @@ const state = {
   announcements: [],
   lastRefresh: 0,
   invoices: [],
-  view: location.hash === '#factures' ? 'invoices' : 'quotes',
+  catalog: [],
+  view: { '#factures': 'invoices', '#soumissions': 'quotes' }[location.hash] || 'today',
   msg: null,
+  showCosts: false,
 };
+// Boîte d'envoi hors ligne (compte synchronisé seulement).
+let outbox = null;
 
 const isDemo = () => state.store && state.store.mode === 'demo';
 const ent = () => (state.me && state.me.entitlement) || {};
@@ -56,7 +63,11 @@ async function boot() {
       return;
     }
     if (!localStorageFlag(MIGRATED_KEY)) state.legacy = detectLocalQuotes([MIGRATED_KEY]);
+    outbox = createOutbox({ userId: state.me.user.id, onChange: renderNet });
+    registerServiceWorker();
   }
+  state.showCosts = localStorageFlag('sp_show_costs') === '1';
+  $('showCosts').checked = state.showCosts;
   try {
     await reload();
     await invoicesUI.load();
@@ -64,13 +75,18 @@ async function boot() {
     $('loading').textContent = err.message;
     return;
   }
+  try { await catalogUI.load(); } catch { /* bibliothèque indisponible pour l'instant */ }
   $('loading').hidden = true;
   $('content').hidden = false;
   $('newBtn').hidden = false;
+  $('bottomNav').hidden = false;
   announceDecisions();
   render();
   setView(state.view);
   handleReturnParams();
+  window.addEventListener('online', flushOutbox);
+  window.addEventListener('offline', renderNet);
+  if (outbox && outbox.count() && navigator.onLine) flushOutbox();
 }
 
 function localStorageFlag(key, value) {
@@ -81,8 +97,65 @@ function localStorageFlag(key, value) {
   return null;
 }
 
+const FORM_KEYS = ['client', 'project', 'amount', 'detailed', 'items', 'subtotal', 'discount', 'taxes', 'gst', 'qst', 'status', 'sentOn',
+  'followUpOn', 'validUntil', 'clientEmail', 'clientPhone', 'clientAddress', 'notes', 'terms', 'subcontract', 'denouncedOn'];
+
+/** Liste du serveur + ce qui attend dans la boîte d'envoi (brouillons, modifications, signatures hors ligne). */
 async function reload() {
-  state.quotes = await state.store.list();
+  const server = await state.store.list();
+  if (!outbox) { state.quotes = server; return; }
+  const merged = server.map((q) => {
+    const pend = outbox.pendingUpdate(q.id);
+    let out = q;
+    if (pend) {
+      try {
+        const p = previewQuote(pend, { id: q.id, createdAt: q.createdAt });
+        out = { ...q, ...Object.fromEntries(FORM_KEYS.map((k) => [k, p[k]])), pendingSync: true };
+      } catch { out = { ...q, pendingSync: true }; }
+    }
+    if (outbox.pendingSign(q.id)) out = { ...out, status: 'accepted', pendingSync: true };
+    return out;
+  });
+  const drafts = [];
+  for (const e of outbox.drafts()) {
+    try {
+      drafts.push({ ...previewQuote(e.body, { id: e.tmpId, createdAt: e.at }), offlineDraft: true, syncError: e.error || null });
+    } catch { /* brouillon illisible : ignoré à l'affichage */ }
+  }
+  state.quotes = [...drafts, ...merged];
+}
+
+// =============== Hors ligne ===============
+function renderNet() {
+  const chip = $('netChip');
+  if (!chip) return;
+  const pending = outbox ? outbox.count() : 0;
+  if (!navigator.onLine) {
+    chip.hidden = false;
+    chip.textContent = pending ? `Hors ligne · ${pending}` : 'Hors ligne';
+    chip.title = pending ? `${plural(pending, 'changement attend', 'changements attendent')} le réseau` : 'Pas de réseau : tu vois tes dernières données';
+  } else if (pending) {
+    chip.hidden = false;
+    chip.textContent = `${pending} à envoyer`;
+    chip.title = '';
+  } else chip.hidden = true;
+  chip.parentElement.classList.toggle('has-net', !chip.hidden);
+}
+
+async function flushOutbox() {
+  renderNet();
+  if (!outbox || !outbox.count() || !navigator.onLine) return;
+  const r = await outbox.flush();
+  if (r.sent) {
+    try {
+      await reload();
+      await invoicesUI.load();
+    } catch { /* on réessaiera */ }
+    render();
+    toast(`Réseau retrouvé : ${plural(r.sent, 'changement envoyé', 'changements envoyés')}.`);
+  }
+  if (r.failed) toast(`${plural(r.failed, 'brouillon refusé', 'brouillons refusés')} : ouvre-le pour corriger.`, { error: true });
+  renderNet();
 }
 
 async function refreshMe() {
@@ -143,7 +216,10 @@ function isDue(q, today) {
 }
 
 function followTag(q, today) {
-  if (q.status === 'accepted') return h('span', { class: 'tag tag-go', text: q.decidedOnlineAt ? 'Acceptée en ligne' : 'Acceptée' });
+  if (q.offlineDraft) return h('span', { class: 'tag tag-due', text: q.syncError ? `Brouillon refusé : ${q.syncError}` : 'Brouillon sur ce téléphone' });
+  if (q.status === 'accepted') {
+    return h('span', { class: 'tag tag-go', text: q.signedInPerson ? 'Signée sur place' : (q.decidedOnlineAt ? 'Acceptée en ligne' : 'Acceptée') });
+  }
   if (q.status === 'refused') return h('span', { class: 'tag tag-stop', text: q.decidedOnlineAt ? 'Refusée en ligne' : 'Refusée' });
   if (!q.followUpOn) return h('span', { class: 'tag', text: 'Aucune relance prévue' });
   const d = daysBetween(today, q.followUpOn);
@@ -167,15 +243,19 @@ function viewTag(q) {
 }
 
 // =============== Rendu ===============
+const VIEW_HASH = { today: '', quotes: '#soumissions', invoices: '#factures' };
+
 function setView(view) {
-  state.view = view;
-  const inv = view === 'invoices';
-  $('quotesView').hidden = inv;
-  $('invoicesView').hidden = !inv;
-  $('tab-quotes').setAttribute('aria-selected', String(!inv));
-  $('tab-invoices').setAttribute('aria-selected', String(inv));
-  $('newBtn').hidden = inv;
-  try { history.replaceState(null, '', `${location.pathname}${location.search}${inv ? '#factures' : ''}`); } catch { /* aperçu */ }
+  state.view = VIEW_HASH[view] === undefined ? 'today' : view;
+  $('todayView').hidden = state.view !== 'today';
+  $('quotesView').hidden = state.view !== 'quotes';
+  $('invoicesView').hidden = state.view !== 'invoices';
+  document.querySelectorAll('#bottomNav [data-view]').forEach((b) => {
+    if (b.dataset.view === state.view) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
+  $('newBtn').hidden = state.view === 'invoices';
+  try { history.replaceState(null, '', `${location.pathname}${location.search}${VIEW_HASH[state.view]}`); } catch { /* aperçu */ }
 }
 
 function render() {
@@ -184,6 +264,8 @@ function render() {
   renderBanners();
   renderStats();
   renderLists();
+  renderToday();
+  renderNet();
   $('newBtn').setAttribute('aria-disabled', canWrite() ? 'false' : 'true');
 }
 
@@ -294,6 +376,7 @@ function slip(q, today, { due = false } = {}) {
   const meta = [
     followTag(q, today),
     viewTag(q),
+    q.pendingSync ? h('span', { class: 'tag' }, 'En attente de réseau') : null,
     h('span', {}, due ? `Envoyée ${relDays(-sentAgo)}` : `Envoyée le ${dateLong(q.sentOn)}`),
     q.followUpCount ? h('span', {}, plural(q.followUpCount, 'relance faite', 'relances faites')) : null,
     q.number ? h('span', { class: 'num' }, `N° ${q.number}`) : null,
@@ -317,27 +400,6 @@ function slip(q, today, { due = false } = {}) {
 
 function renderLists() {
   const today = todayISO();
-  // Les soumissions ouvertes récemment passent devant : c'est le meilleur moment pour appeler.
-  const due = state.quotes.filter((q) => isDue(q, today))
-    .sort((a, b) => (Number(isHot(b)) - Number(isHot(a)))
-      || (a.followUpOn < b.followUpOn ? -1 : a.followUpOn > b.followUpOn ? 1 : b.amount - a.amount));
-  $('dueCount').textContent = due.length ? String(due.length) : '';
-
-  if (due.length) {
-    $('dueList').replaceChildren(...due.map((q) => slip(q, today, { due: true })));
-  } else if (!state.quotes.length) {
-    $('dueList').replaceChildren(h('div', { class: 'empty' },
-      h('strong', {}, 'Aucune soumission pour l’instant.'),
-      'Ajoute la dernière soumission que tu as envoyée : la relance se planifie toute seule, 3 jours plus tard.',
-      h('div', {}, h('button', { class: 'btn btn-ink', type: 'button', onClick: () => openQuote() }, 'Ajouter une soumission'))));
-  } else {
-    const next = state.quotes.filter((q) => q.status === 'pending' && q.followUpOn && q.followUpOn > today)
-      .sort((a, b) => (a.followUpOn < b.followUpOn ? -1 : 1))[0];
-    $('dueList').replaceChildren(h('div', { class: 'empty' },
-      h('strong', {}, 'Rien à relancer aujourd’hui.'),
-      next ? `Prochaine relance : ${next.client}, ${relDays(daysBetween(today, next.followUpOn))}.` : 'Aucune relance planifiée.'));
-  }
-
   const needle = fold(state.search.trim());
   const filtered = state.quotes.filter((q) =>
     (state.filter === 'all' || q.status === state.filter)
@@ -346,6 +408,159 @@ function renderLists() {
   $('allList').replaceChildren(...(filtered.length
     ? filtered.map((q) => slip(q, today))
     : [h('div', { class: 'empty' }, state.quotes.length ? 'Aucune soumission ne correspond à ta recherche.' : 'Tes soumissions apparaîtront ici.')]));
+}
+
+// =============== Aujourd'hui ===============
+const btnSm = (label, onClick, cls = 'btn-ink') => h('button', { class: `btn ${cls} btn-sm`, type: 'button', onClick }, label);
+
+function card(tone, kicker, text, actions = []) {
+  return h('article', { class: `slip today-card ${tone ? `is-${tone}` : ''}` },
+    h('span', { class: 'slip-perf', 'aria-hidden': 'true' }),
+    h('p', { class: 'today-kicker' }, kicker),
+    h('p', { class: 'today-text' }, text),
+    actions.length ? h('div', { class: 'slip-actions' }, actions) : null);
+}
+
+function telHref(phone) {
+  const digits = String(phone || '').replace(/[^0-9+]/g, '');
+  return digits ? `tel:${digits}` : '';
+}
+
+function hotCard(q) {
+  const tel = telHref(q.clientPhone);
+  return card('hot', 'Client chaud',
+    `${q.client} a ouvert « ${q.project} » ${relTime(q.lastViewedAt)} (${plural(q.viewCount, 'ouverture', 'ouvertures')}). C’est le meilleur moment pour appeler.`,
+    [tel ? h('a', { class: 'btn btn-ink btn-sm', href: tel }, 'Appeler') : null,
+      btnSm(tel ? 'Écrire' : 'Relancer', () => openFollow(q.id), tel ? 'btn-quiet' : 'btn-ink')].filter(Boolean));
+}
+
+function renderToday() {
+  const today = todayISO();
+  const cards = [];
+  const invoices = state.invoices || [];
+  let shieldN = 0;
+
+  // 1. Bouclier Paiement : délais de l'hypothèque légale des factures impayées
+  for (const inv of invoices) {
+    const sh = invoicesUI.shield(inv, today);
+    if (!sh || sh.phase === 'past') continue;
+    const overdue = invoicesUI.isOverdue(inv, today);
+    if (sh.phase === 'lien' && !sh.urgent) continue;
+    if (sh.phase === 'preavis' && !overdue) continue;
+    shieldN++;
+    cards.push(card('alert', 'Bouclier Paiement', sh.phase === 'lien'
+      ? `${inv.client} · facture n° ${inv.number} · ${money2(inv.total)} impayés. Il te reste ${sh.daysToLien === 0 ? 'aujourd’hui seulement' : plural(sh.daysToLien, 'jour', 'jours')} pour protéger ton paiement : inscription de l’hypothèque légale d’ici le ${dateLong(sh.lienBy)}.`
+      : `${inv.client} · facture n° ${inv.number} toujours impayée. Si l’hypothèque légale est inscrite : préavis d’exercice avant le ${dateLong(sh.preavisBy)}.`,
+    [h('a', { class: 'btn btn-ink btn-sm', href: invoicesUI.dossierUrl(inv), target: '_blank', rel: 'noopener' }, 'Préparer le dossier'),
+      btnSm('Voir la facture', () => invoicesUI.open(inv.id), 'btn-quiet')]));
+  }
+  for (const inv of invoices) {
+    if (inv.kind === 'deposit' || inv.status !== 'unpaid' || inv.workEndOn || !invoicesUI.isOverdue(inv, today)) continue;
+    cards.push(card('alert', 'Protège ce paiement',
+      `La facture n° ${inv.number} de ${inv.client} est en retard. Inscris la date de fin des travaux : l’app calcule tes délais d’hypothèque légale.`,
+      [btnSm('Ajouter la date', () => invoicesUI.open(inv.id))]));
+  }
+
+  // 2. Sous-traitance : dénoncer le contrat au propriétaire avant les travaux
+  for (const q of state.quotes) {
+    if (q.status !== 'accepted' || !q.subcontract || q.denouncedOn || q.offlineDraft) continue;
+    cards.push(card('alert', 'Sous-traitance',
+      `« ${q.project} » pour ${q.client} : dénonce ton contrat par écrit au propriétaire de l’immeuble avant de commencer, pour garder ta protection de paiement.`,
+      [btnSm('C’est fait', () => markDenounced(q.id)), btnSm('Voir', () => openQuote(q.id), 'btn-quiet')]));
+  }
+
+  // 3. Signée au domicile du client : délai d'annulation possible
+  for (const q of state.quotes) {
+    if (q.status !== 'accepted' || !q.signedAtHome || !q.decidedOnlineAt) continue;
+    const signedOn = toISO(new Date(q.decidedOnlineAt));
+    const until = addDays(signedOn, 10);
+    if (until < today) continue;
+    cards.push(card('', 'Signée à domicile',
+      `${q.client} a signé « ${q.project} » le ${dateLong(signedOn)} et peut avoir jusqu’au ${dateLong(until)} pour annuler. Valide avec ton avocat avant de commencer les travaux.`,
+      [btnSm('Voir', () => openQuote(q.id), 'btn-quiet')]));
+  }
+
+  // 4. Clients chauds, puis relances du jour (les plus chaudes d'abord)
+  const hot = state.quotes.filter((q) => isHot(q) && !isDue(q, today));
+  cards.push(...hot.map(hotCard));
+  const due = state.quotes.filter((q) => !q.offlineDraft && isDue(q, today))
+    .sort((a, b) => (Number(isHot(b)) - Number(isHot(a)))
+      || (a.followUpOn < b.followUpOn ? -1 : a.followUpOn > b.followUpOn ? 1 : b.amount - a.amount));
+  cards.push(...due.map((q) => slip(q, today, { due: true })));
+
+  // 5. Prix bientôt échus : une raison vraie de relancer
+  for (const q of state.quotes) {
+    if (q.status !== 'pending' || !q.validUntil || isDue(q, today) || isHot(q) || q.offlineDraft) continue;
+    const d = daysBetween(today, q.validUntil);
+    if (d < 0 || d > 3) continue;
+    cards.push(card('', 'Prix garantis bientôt échus',
+      `« ${q.project} » de ${q.client} est valide jusqu’au ${dateLong(q.validUntil)}. Bon moment pour un dernier suivi.`,
+      [btnSm('Relancer', () => openFollow(q.id))]));
+  }
+
+  // 6. Argent à encaisser : acomptes, factures en retard
+  const deposits = invoices.filter((inv) => inv.kind === 'deposit' && inv.status === 'unpaid');
+  cards.push(...deposits.map((inv) => invoicesUI.slip(inv, today, { actions: true })));
+  const late = invoices.filter((inv) => inv.kind !== 'deposit' && invoicesUI.isOverdue(inv, today));
+  cards.push(...late.map((inv) => invoicesUI.slip(inv, today, { actions: true })));
+
+  // 7. Acceptées sans facture (60 derniers jours)
+  if (!isDemo()) {
+    for (const q of state.quotes) {
+      if (q.status !== 'accepted' || q.offlineDraft || q.pendingSync || invoicesUI.invoiceFor(q.id)) continue;
+      if (Date.now() - (q.decidedOnlineAt || q.updatedAt) > 60 * 864e5) continue;
+      cards.push(card('go', 'Acceptée',
+        `${q.client} · « ${q.project} » · ${money2(q.amount)}. Travaux terminés? La facture se crée en un geste, acompte déjà déduit.`,
+        [btnSm('Créer la facture', () => invoicesUI.createFromQuote(q.id).then(() => setView('invoices'))),
+          btnSm('Voir', () => openQuote(q.id), 'btn-quiet')]));
+    }
+  }
+
+  const lateSum = late.reduce((sum, inv) => sum + inv.total, 0);
+  const parts = [
+    due.length ? plural(due.length, 'relance', 'relances') : null,
+    state.quotes.filter(isHot).length ? plural(state.quotes.filter(isHot).length, 'client chaud', 'clients chauds') : null,
+    late.length ? `${plural(late.length, 'facture en retard', 'factures en retard')} (${moneyRound(lateSum)})` : null,
+    deposits.length ? plural(deposits.length, 'acompte à encaisser', 'acomptes à encaisser') : null,
+    shieldN ? plural(shieldN, 'paiement à protéger', 'paiements à protéger') : null,
+  ].filter(Boolean);
+  const actionable = cards.length;
+  $('todayCount').textContent = actionable ? String(actionable) : '';
+  $('todayTabCount').textContent = actionable ? String(actionable) : '';
+
+  if (!state.quotes.length) {
+    $('todaySummary').textContent = 'Bienvenue. Commence par ta dernière soumission envoyée : la relance se planifie toute seule.';
+    $('todayList').replaceChildren(h('div', { class: 'empty' },
+      h('strong', {}, 'Aucune soumission pour l’instant.'),
+      'Monte ta bibliothèque une fois (tes taux, tes matériaux, tes forfaits) : tes prochaines soumissions se font en moins d’une minute.',
+      h('div', { class: 'btn-row' },
+        h('button', { class: 'btn btn-ink', type: 'button', onClick: () => { if (requireWrite()) openQuote(); } }, 'Nouvelle soumission'),
+        isDemo() ? null : h('button', { class: 'btn btn-ghost on-paper', type: 'button', onClick: () => catalogUI.open({ manage: true }) }, 'Monter ma bibliothèque'))));
+    return;
+  }
+  if (!cards.length) {
+    const next = state.quotes.filter((q) => q.status === 'pending' && q.followUpOn && q.followUpOn > today)
+      .sort((a, b) => (a.followUpOn < b.followUpOn ? -1 : 1))[0];
+    $('todaySummary').textContent = 'Rien d’urgent aujourd’hui.';
+    $('todayList').replaceChildren(h('div', { class: 'empty' },
+      h('strong', {}, 'Tout est à jour.'),
+      next ? `Prochaine relance : ${next.client}, ${relDays(daysBetween(today, next.followUpOn))}.` : 'Aucune relance planifiée. Une nouvelle soumission?'));
+    return;
+  }
+  $('todaySummary').textContent = parts.length ? `${parts.join(' · ')}.` : 'À faire aujourd’hui.';
+  $('todayList').replaceChildren(...cards);
+}
+
+async function markDenounced(id) {
+  if (!requireWrite()) return;
+  const q = state.quotes.find((x) => x.id === id);
+  if (!q) return;
+  try {
+    await state.store.update(id, { ...q, denouncedOn: todayISO() });
+    await reload();
+    render();
+    toast('Dénonciation notée. Garde ta preuve d’envoi au dossier.');
+  } catch (e) { handleError(e); }
 }
 
 // =============== Soumission (ajout / modification) ===============
@@ -411,46 +626,97 @@ function setDetailed(on, { seedFromAmount = false } = {}) {
   form.querySelector('[data-field="amount"]').hidden = on;
 }
 
-function openQuote(id = null) {
+function openQuote(id = null, { duplicateOf = null } = {}) {
   const form = $('quoteForm');
   clearErrors(form);
   const q = id ? state.quotes.find((x) => x.id === id) : null;
+  const src = duplicateOf ? state.quotes.find((x) => x.id === duplicateOf) : null;
   state.editingId = q ? q.id : null;
   state.followUpTouched = Boolean(q);
-  $('quoteTitle').textContent = q ? `Soumission${q.number ? ` n° ${q.number}` : ''}` : 'Nouvelle soumission';
+  $('quoteTitle').textContent = q
+    ? (q.offlineDraft ? 'Brouillon (hors ligne)' : `Soumission${q.number ? ` n° ${q.number}` : ''}`)
+    : (src ? `Copie de « ${src.project} »` : 'Nouvelle soumission');
   const today = todayISO();
   const defaults = businessDefaults();
-  const values = q
-    ? { ...q, amount: decimalText(q.amount), discount: q.discount ? decimalText(q.discount) : '' }
-    : { client: '', project: '', amount: '', status: 'pending', sentOn: today, followUpOn: addDays(today, 3), clientEmail: '', clientPhone: '',
+  let values;
+  if (q) {
+    values = { ...q, amount: decimalText(q.amount), discount: q.discount ? decimalText(q.discount) : '' };
+    if (!q.detailed && !q.validUntil) values.validUntil = addDays(q.sentOn || today, 30);
+    if (!q.detailed && !q.terms) values.terms = defaults.terms;
+  } else {
+    values = { client: '', project: '', amount: '', status: 'pending', sentOn: today, followUpOn: addDays(today, 3), clientEmail: '', clientPhone: '',
       notes: '', discount: '', validUntil: addDays(today, 30), clientAddress: '', terms: defaults.terms };
-  if (q && !q.detailed && !q.validUntil) values.validUntil = addDays(q.sentOn || today, 30);
-  if (q && !q.detailed && !q.terms) values.terms = defaults.terms;
+    if (src) {
+      // La job de la semaine passée devient celle d'aujourd'hui : mêmes lignes et conditions, nouveau client.
+      Object.assign(values, { project: src.project, amount: decimalText(src.amount), discount: src.discount ? decimalText(src.discount) : '',
+        terms: src.terms || defaults.terms });
+    }
+  }
   for (const f of FIELDS) form.elements[f].value = values[f] ?? '';
-  form.elements.taxes.checked = q && q.detailed ? q.taxes : defaults.taxes;
-  quoteLines.set(q && q.detailed ? toEditable(q.items) : []);
+  const base = q || src;
+  form.elements.taxes.checked = base && base.detailed ? base.taxes : defaults.taxes;
+  form.elements.subcontract.checked = Boolean(q && q.subcontract);
+  quoteLines.set(base && base.detailed ? toEditable(base.items) : []);
   state.detailed = false;
-  setDetailed(Boolean(q && q.detailed));
+  // Nouvelle soumission : lignes et TPS/TVQ d'office ; le montant global devient l'exception.
+  setDetailed(q ? Boolean(q.detailed) : (src ? Boolean(src.detailed) : true));
 
   const writable = canWrite();
   for (const f of FIELDS) form.elements[f].disabled = !writable;
   form.elements.taxes.disabled = !writable;
+  form.elements.subcontract.disabled = !writable;
   $('detailToggle').disabled = !writable;
   $('addLine').disabled = !writable;
   $('saveQuote').hidden = !writable;
-  $('saveSend').hidden = !(writable && !isDemo() && (!q || q.status === 'pending'));
+  $('saveSend').hidden = !(writable && !isDemo() && (!q || (q.status === 'pending' && !q.offlineDraft)));
   $('deleteQuote').hidden = !(q && writable);
-  const existingInvoice = q ? invoicesUI.invoiceFor(q.id) : null;
-  $('makeInvoice').hidden = !(q && (existingInvoice || (q.status !== 'refused' && (writable || isDemo()))));
+  $('duplicateQuote').hidden = !(q && writable && !q.offlineDraft);
+  $('signHere').hidden = !(q && writable && !isDemo() && q.status === 'pending' && !q.offlineDraft && !q.pendingSync);
+  const existingInvoice = q && !q.offlineDraft ? invoicesUI.invoiceFor(q.id) : null;
+  const deposit = q && !q.offlineDraft ? invoicesUI.depositFor(q.id) : null;
+  $('makeInvoice').hidden = !(q && !q.offlineDraft && (existingInvoice || (q.status !== 'refused' && (writable || isDemo()))));
   $('makeInvoice').textContent = existingInvoice ? `Voir la facture n° ${existingInvoice.number}` : 'Créer la facture';
+  $('makeDeposit').hidden = !(q && !isDemo() && q.status === 'accepted' && !q.offlineDraft && !q.pendingSync && (deposit || writable) && !existingInvoice);
+  $('makeDeposit').textContent = deposit ? `Voir l’acompte n° ${deposit.number}` : 'Facture d’acompte';
+  $('quoteActions').hidden = ['signHere', 'makeDeposit', 'makeInvoice', 'duplicateQuote'].every((b) => $(b).hidden);
   if (!writable) {
     $('quoteError').textContent = 'Lecture seule : active ton abonnement pour modifier tes soumissions.';
     $('quoteError').hidden = false;
   }
   updateFollowHint();
-  renderLinkBox(q);
+  renderNotice(q);
+  renderLinkBox(q && !q.offlineDraft ? q : null);
   $('quoteDialog').showModal();
   if (!q && writable) form.elements.client.focus();
+}
+
+/** Encadré privé dans la soumission : brouillon hors ligne, signée à domicile, sous-traitance. */
+function renderNotice(q) {
+  const box = $('quoteNotice');
+  const items = [];
+  if (q && q.offlineDraft) {
+    items.push(h('p', {}, q.syncError
+      ? `Refusée à l’envoi : ${q.syncError} Corrige et enregistre de nouveau.`
+      : 'Brouillon gardé sur ce téléphone. Il partira tout seul au retour du réseau et recevra son numéro à ce moment.'));
+  }
+  if (q && q.status === 'accepted' && q.signedInPerson) {
+    const signedOn = q.decidedOnlineAt ? toISO(new Date(q.decidedOnlineAt)) : null;
+    items.push(h('p', {}, `Signée sur place par ${q.decidedByName || q.client}${signedOn ? ` le ${dateLong(signedOn)}` : ''}.`
+      + (q.signedAtHome && signedOn ? ` Signée au domicile du client : il peut avoir jusqu’au ${dateLong(addDays(signedOn, 10))} pour annuler (à valider avec ton avocat).` : '')));
+  }
+  if (q && q.subcontract && q.status === 'accepted') {
+    items.push(h('p', {}, q.denouncedOn
+      ? `Contrat dénoncé au propriétaire le ${dateLong(q.denouncedOn)}.`
+      : 'Sous-traitance : dénonce ton contrat par écrit au propriétaire avant de commencer les travaux.'));
+    if (!q.denouncedOn && canWrite()) {
+      items.push(h('div', { class: 'btn-row' }, h('button', { class: 'btn btn-ink btn-sm', type: 'button', onClick: async () => {
+        $('quoteDialog').close();
+        await markDenounced(q.id);
+      } }, 'C’est fait')));
+    }
+  }
+  box.hidden = !items.length;
+  box.replaceChildren(...items);
 }
 
 function updateFollowHint() {
@@ -463,6 +729,9 @@ function formData() {
   const form = $('quoteForm');
   const data = Object.fromEntries(FIELDS.map((f) => [f, form.elements[f].value]));
   data.followUpOn = data.followUpOn || null;
+  data.subcontract = form.elements.subcontract.checked;
+  const current = state.editingId ? state.quotes.find((x) => x.id === state.editingId) : null;
+  data.denouncedOn = current ? current.denouncedOn || null : null;
   if (state.detailed) {
     data.items = quoteLines.cleaned();
     data.taxes = form.elements.taxes.checked;
@@ -493,8 +762,21 @@ async function saveQuote(event) {
   }
   const buttons = [$('saveQuote'), $('saveSend')];
   buttons.forEach((b) => { b.disabled = true; });
+  const keepOffline = async (message) => {
+    if (state.editingId) outbox.queueUpdate(state.editingId, data);
+    else outbox.queueCreate(data);
+    $('quoteDialog').close();
+    await reload();
+    render();
+    toast(message);
+  };
   try {
     const wasEditing = Boolean(state.editingId);
+    if (outbox && isTmpId(state.editingId)) {
+      await keepOffline('Brouillon mis à jour sur ce téléphone.');
+      flushOutbox();
+      return;
+    }
     const saved = state.editingId ? await state.store.update(state.editingId, data) : await state.store.create(data);
     $('quoteDialog').close();
     await reload();
@@ -502,6 +784,12 @@ async function saveQuote(event) {
     if (sendAfter) await shareAndSend(saved.id);
     else toast(wasEditing ? 'Soumission mise à jour.' : 'Soumission ajoutée.');
   } catch (e) {
+    if (e.status === 0 && outbox) {
+      await keepOffline(sendAfter
+        ? 'Pas de réseau : soumission gardée sur ce téléphone. Envoie le lien au retour du réseau.'
+        : 'Pas de réseau : gardée sur ce téléphone. Elle partira toute seule au retour du réseau.');
+      return;
+    }
     if (e.status === 400 && e.field) showFieldError(form, e.field, e.message);
     else if (e.status === 401 || e.status === 402) { $('quoteDialog').close(); handleError(e); }
     else showFieldError(form, null, e.message);
@@ -514,6 +802,14 @@ async function deleteQuote() {
   const q = state.quotes.find((x) => x.id === state.editingId);
   if (!q || !confirm(`Supprimer la soumission « ${q.project} » de ${q.client}? Cette action est définitive.`)) return;
   try {
+    if (q.offlineDraft) {
+      outbox.removeDraft(q.id);
+      $('quoteDialog').close();
+      await reload();
+      render();
+      toast('Brouillon supprimé.');
+      return;
+    }
     await state.store.remove(q.id);
     $('quoteDialog').close();
     await reload();
@@ -724,7 +1020,7 @@ const SEEN_KEY = 'sp_seen_decisions';
 function announceDecisions() {
   if (isDemo()) return;
   const seen = Number(localStorageFlag(SEEN_KEY)) || 0;
-  const fresh = state.quotes.filter((q) => q.decidedOnlineAt && q.decidedOnlineAt > seen)
+  const fresh = state.quotes.filter((q) => q.decidedOnlineAt && q.decidedOnlineAt > seen && !q.signedInPerson)
     .sort((a, b) => b.decidedOnlineAt - a.decidedOnlineAt);
   const known = new Set(state.announcements.map((q) => q.id));
   state.announcements = [...fresh.filter((q) => !known.has(q.id)), ...state.announcements].slice(0, 3);
@@ -896,6 +1192,8 @@ function openAccount() {
     defaultTerms: inp('acct-terms', biz.defaultTerms, { textarea: true, max: '4000', placeholder: 'Ex. Paiement : 30 % à la signature, solde à la fin des travaux. Prix valides 30 jours.' }),
     paymentInstructions: inp('acct-pay', biz.paymentInstructions, { textarea: true, max: '1000', placeholder: 'Ex. Virement Interac à paiement@monentreprise.ca, ou chèque à l’ordre de mon entreprise.' }),
     invoiceDueDays: inp('acct-due', String(biz.invoiceDueDays ?? 30), { max: '3', inputmode: 'numeric' }),
+    depositPct: inp('acct-deposit', biz.depositPct ? String(biz.depositPct) : '', { max: '3', inputmode: 'numeric', placeholder: 'Ex. 30' }),
+    marginFloorPct: inp('acct-margin', biz.marginFloorPct === null || biz.marginFloorPct === undefined ? '' : String(biz.marginFloorPct), { max: '2', inputmode: 'numeric', placeholder: 'Ex. 20' }),
   };
   const taxesBox = h('input', { type: 'checkbox', id: 'acct-taxes' });
   taxesBox.checked = biz.chargeTaxes !== false;
@@ -920,6 +1218,7 @@ function openAccount() {
             rbqNumber: v('rbqNumber'), gstNumber: v('gstNumber'), qstNumber: v('qstNumber'),
             chargeTaxes: taxesBox.checked, defaultTerms: v('defaultTerms'),
             paymentInstructions: v('paymentInstructions'), invoiceDueDays: v('invoiceDueDays'),
+            depositPct: v('depositPct'), marginFloorPct: v('marginFloorPct'),
           },
         } });
         render();
@@ -943,6 +1242,9 @@ function openAccount() {
   fieldWrap('Conditions par défaut', 'defaultTerms', 'Reprises sur chaque nouvelle soumission détaillée. Tu peux les modifier au cas par cas.'),
   fieldWrap('Modalités de paiement', 'paymentInstructions', 'Affichées sur tes factures et dans les messages d’envoi.'),
   fieldWrap('Délai de paiement des factures (jours)', 'invoiceDueDays'),
+  h('div', { class: 'form-row' },
+    fieldWrap('Acompte à la signature (%)', 'depositPct', 'Facture d’acompte créée dès que le client accepte ou signe. Vide = aucun.'),
+    fieldWrap('Plancher de marge (%)', 'marginFloorPct', 'La marge passe au rouge sous ce seuil. Privé.')),
   h('div', { class: 'btn-row save-row' },
     h('button', { class: 'btn btn-ink btn-sm', type: 'submit' }, 'Enregistrer le profil'),
     savedNote));
@@ -950,6 +1252,9 @@ function openAccount() {
   const pw = h('input', { class: 'input', type: 'password', id: 'acct-delete-pw', autocomplete: 'current-password' });
   body.replaceChildren(
     section('Profil et entreprise', h('p', {}, 'Ces informations signent tes messages et apparaissent sur les soumissions que tu envoies.'), profileForm),
+    section('Bibliothèque',
+      h('p', {}, `${plural((state.catalog || []).filter((c) => c.kind === 'item').length, 'article', 'articles')}, ${plural((state.catalog || []).filter((c) => c.kind === 'package').length, 'forfait', 'forfaits')}. Tes prix, tes coûts et tes forfaits, en un toucher dans chaque soumission.`),
+      h('div', { class: 'btn-row' }, h('button', { class: 'btn btn-ink btn-sm', type: 'button', onClick: () => { $('accountDialog').close(); catalogUI.open({ manage: true }); } }, 'Gérer ma bibliothèque'))),
     billingSection(),
     dataSection,
     section('Session',
@@ -958,6 +1263,7 @@ function openAccount() {
         class: 'btn btn-ghost on-paper btn-sm', type: 'button',
         onClick: async () => {
           try { await api('/api/auth/logout', { method: 'POST', body: {} }); } catch { /* on sort quand même */ }
+          await clearOfflineData();
           location.href = '/';
         },
       }, 'Se déconnecter'))),
@@ -971,6 +1277,7 @@ function openAccount() {
           if (!confirm('Supprimer définitivement ton compte et toutes tes soumissions?')) return;
           try {
             await api('/api/me', { method: 'DELETE', body: { password: pw.value } });
+            await clearOfflineData();
             location.href = '/?compte=supprime';
           } catch (e) { handleError(e); }
         },
@@ -989,6 +1296,7 @@ function wireStatic() {
 
   $('newBtn').addEventListener('click', () => { if (requireWrite()) openQuote(); });
   $('accountBtn').addEventListener('click', () => { if (state.store) openAccount(); });
+  document.querySelectorAll('[data-account]').forEach((b) => b.addEventListener('click', () => { if (state.store) openAccount(); }));
 
   $('search').addEventListener('input', (ev) => { state.search = ev.target.value; renderLists(); });
   $('filters').addEventListener('click', (ev) => {
@@ -1010,9 +1318,45 @@ function wireStatic() {
   $('detailToggle').addEventListener('click', () => setDetailed(!state.detailed, { seedFromAmount: true }));
   quoteLines = createLineEditor({
     listEl: $('lines'), totalsEl: $('totals'), discountInput: form.elements.discount, taxesInput: form.elements.taxes,
-    idPrefix: 'line', isWritable: canWrite, allowOptional: true,
+    idPrefix: 'line', isWritable: canWrite, allowOptional: true, allowCost: true, showCost: () => state.showCosts,
+    marginEl: $('marginBar'),
+    marginFloor: () => (state.me && state.me.user && state.me.user.business ? state.me.user.business.marginFloorPct : null),
   });
   $('addLine').addEventListener('click', () => quoteLines.add());
+  $('openCatalog').addEventListener('click', () => { if (requireWrite()) catalogUI.open(); });
+  $('savePackage').addEventListener('click', () => catalogUI.saveAsPackage(quoteLines.snapshot()));
+  $('showCosts').addEventListener('change', (ev) => {
+    state.showCosts = ev.target.checked;
+    localStorageFlag('sp_show_costs', state.showCosts ? '1' : '0');
+    quoteLines.render();
+    quoteLines.update();
+  });
+  $('duplicateQuote').addEventListener('click', () => {
+    const id = state.editingId;
+    $('quoteDialog').close();
+    if (requireWrite()) openQuote(null, { duplicateOf: id });
+  });
+  $('signHere').addEventListener('click', () => {
+    const q = state.quotes.find((x) => x.id === state.editingId);
+    $('quoteDialog').close();
+    signUI.open(q);
+  });
+  $('makeDeposit').addEventListener('click', async () => {
+    const id = state.editingId;
+    const existing = invoicesUI.depositFor(id);
+    $('quoteDialog').close();
+    if (existing) { setView('invoices'); invoicesUI.open(existing.id); return; }
+    const pctProfile = state.me && state.me.user.business ? state.me.user.business.depositPct : 0;
+    let pct = null;
+    if (!pctProfile) {
+      const raw = prompt('Pourcentage d’acompte (ex. 30) :', '30');
+      if (!raw) return;
+      pct = Number(String(raw).replace(/[\s%]/g, ''));
+    }
+    const inv = await invoicesUI.createDeposit(id, pct);
+    if (inv) setView('invoices');
+  });
+  catalogUI.wire();
   $('quickLines').addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-line]');
     if (btn && canWrite()) quoteLines.add({ description: btn.dataset.line, unit: btn.dataset.unit || '' });
@@ -1050,6 +1394,33 @@ function wireStatic() {
 const invoicesUI = createInvoicesUI({
   state, api, $, isDemo, canWrite, requireWrite, handleError, openMessage,
   rerender: () => render(),
+});
+
+const catalogUI = createCatalogUI({
+  state, api, $, isDemo, canWrite, requireWrite, handleError,
+  onPick: (lines) => {
+    if (!state.detailed) setDetailed(true);
+    quoteLines.addMany(lines);
+  },
+});
+
+const signUI = createSignUI({
+  state, api, $, requireWrite, handleError,
+  afterSigned: async () => {
+    try {
+      await reload();
+      await invoicesUI.load();
+    } catch { /* on garde l'affichage */ }
+    render();
+  },
+  openInvoice: (id) => { setView('invoices'); invoicesUI.open(id); },
+  sendCopy: (id) => shareAndSend(id),
+  queueOffline: (id, body) => {
+    if (!outbox) return false;
+    outbox.queueSign(id, body);
+    reload().then(render);
+    return true;
+  },
 });
 
 boot();

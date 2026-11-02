@@ -2,7 +2,10 @@ import { HttpError, json, readJson } from '../lib/http.js';
 import { newId, randomToken } from '../lib/crypto.js';
 import { requireUser } from '../lib/session.js';
 import { assertCanWrite, track } from '../lib/guards.js';
-import { cleanQuote, isoDate, quoteToJson, str } from '../lib/validate.js';
+import { cleanQuote, invoiceToJson, isoDate, quoteToJson, str, MAX_SIGNATURE } from '../lib/validate.js';
+import { acceptQuote, parseAcceptance } from './public.js';
+import { ensureDeposit } from './invoices.js';
+import { todayToronto } from '../lib/dates.js';
 
 const MAX_QUOTES_PER_USER = 5000;
 const MAX_IMPORT = 1000;
@@ -11,7 +14,7 @@ const MAX_IMPORT = 1000;
 const WRITE_COLS = [
   'client', 'project', 'amount_cents', 'status', 'sent_on', 'follow_up_on', 'valid_until',
   'client_email', 'client_phone', 'client_address', 'notes', 'terms',
-  'items_json', 'subtotal_cents', 'discount_cents', 'taxes', 'gst_cents', 'qst_cents',
+  'items_json', 'subtotal_cents', 'discount_cents', 'taxes', 'gst_cents', 'qst_cents', 'subcontract', 'denounced_on',
 ];
 
 async function countQuotes(env, userId) {
@@ -70,7 +73,8 @@ export async function updateQuote(request, env, id) {
   const values = WRITE_COLS.map((c) => q[c] ?? null);
   // Remise « en attente » d'une soumission décidée en ligne : le client peut de nouveau répondre.
   if (q.status === 'pending' && before.decided_online_at) {
-    sets.push('decided_online_at = NULL', 'decided_by_name = NULL', 'client_message = NULL', 'accepted_snapshot = NULL');
+    sets.push('decided_online_at = NULL', 'decided_by_name = NULL', 'client_message = NULL', 'accepted_snapshot = NULL',
+      'signature_png = NULL', 'signed_in_person = 0', 'signed_at_home = 0');
   }
   await env.DB.prepare(`UPDATE quotes SET ${sets.join(', ')}, updated_at = ? WHERE id = ? AND user_id = ?`)
     .bind(...values, Date.now(), id, user.id).run();
@@ -162,4 +166,34 @@ export async function importQuotes(request, env) {
   }
   if (valid.length) await track(env, existing === 0 ? 'first_quote' : 'quotes_imported', user.id);
   return json({ imported: valid.length, skipped: errors.length, errors: errors.slice(0, 20) });
+}
+
+/**
+ * « Faire signer ici » : le client signe au doigt sur le téléphone de l'entrepreneur.
+ * Même acceptation que le lien client (options, version figée), plus la signature obligatoire.
+ */
+export async function signInPerson(request, env, id) {
+  const user = await requireUser(env, request);
+  assertCanWrite(user, env);
+  const row = await getOwned(env, user.id, id);
+  if (row.status !== 'pending') throw new HttpError(409, 'already_decided', 'Cette soumission a déjà reçu une réponse.');
+  if (row.valid_until && row.valid_until < todayToronto()) {
+    throw new HttpError(409, 'expired', 'Cette soumission est expirée : change la date de validité avant de la faire signer.');
+  }
+  const body = await readJson(request, MAX_SIGNATURE + 6_000);
+  const a = parseAcceptance(body, { requireSignature: true });
+  const ok = await acceptQuote(env, row, { ...a, inPerson: true, atHome: body.atHome === true });
+  if (!ok) throw new HttpError(409, 'already_decided', 'Cette soumission a déjà reçu une réponse.');
+  await track(env, 'quote_signed_in_person', user.id);
+  const fresh = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first();
+  const dep = await ensureDeposit(env, fresh || user, id);
+  return json({ quote: quoteToJson(await getOwned(env, user.id, id)), deposit: dep ? invoiceToJson(dep.invoice) : null });
+}
+
+/** Image de la signature (entrepreneur seulement) : dossier Bouclier Paiement, preuve de l'acceptation. */
+export async function getSignature(request, env, id) {
+  const user = await requireUser(env, request);
+  const row = await getOwned(env, user.id, id);
+  return json({ signature: row.signature_png || null, signedBy: row.decided_by_name || '', signedAt: row.decided_online_at || null,
+    inPerson: Boolean(row.signed_in_person), atHome: Boolean(row.signed_at_home) });
 }
