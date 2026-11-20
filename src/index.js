@@ -7,6 +7,7 @@ import * as admin from './routes/admin.js';
 import * as pub from './routes/public.js';
 import * as invoices from './routes/invoices.js';
 import * as catalog from './routes/catalog.js';
+import { sendFollowUpDigests } from './lib/digest.js';
 
 /** Config publique lue par le site (prix, essai, places fondateur réelles). */
 async function publicConfig(request, env) {
@@ -104,5 +105,9 @@ export default {
     } catch (err) {
       return errorResponse(err);
     }
+  },
+  // Cron quotidien (wrangler.toml, [triggers]) : courriel de relances à chaque entrepreneur.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(sendFollowUpDigests(env));
   },
 };

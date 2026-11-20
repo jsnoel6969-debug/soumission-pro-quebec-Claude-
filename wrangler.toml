@@ -11,6 +11,10 @@ binding = "ASSETS"
 html_handling = "auto-trailing-slash"
 not_found_handling = "404-page"
 
+# Courriel quotidien de relances à l'entrepreneur : 12 h UTC = 7 h (hiver) / 8 h (été) à Montréal.
+[triggers]
+crons = ["0 12 * * *"]
+
 # Journaux et erreurs consultables dans Cloudflare → Worker → Observabilité (gratuit dans les limites du plan).
 [observability]
 enabled = true
