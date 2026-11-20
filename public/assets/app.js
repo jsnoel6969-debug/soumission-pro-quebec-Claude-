@@ -9,6 +9,7 @@ import { createInvoicesUI } from './invoices-ui.js';
 import { createCatalogUI } from './catalog-ui.js';
 import { createSignUI } from './sign-ui.js';
 import { createOutbox, registerServiceWorker, clearOfflineData, isTmpId } from './offline.js';
+import { clientsOf } from './clients.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -398,7 +399,33 @@ function slip(q, today, { due = false } = {}) {
     actions);
 }
 
+// =============== Clients (dérivés des soumissions, aucune base séparée) ===============
+function renderClients() {
+  const clients = clientsOf(state.quotes);
+  $('clientsCount').textContent = String(clients.length);
+  $('clientsList').replaceChildren(...(clients.length
+    ? clients.slice(0, 50).map((c) => {
+      const bits = [plural(c.count, 'soumission', 'soumissions')];
+      if (c.pending) bits.push(`${c.pending} en attente`);
+      if (c.accepted) bits.push(`${money(c.accepted)} $ acceptés`);
+      return h('button', {
+        class: 'slip client-row', type: 'button',
+        onClick: () => {
+          state.search = c.name;
+          $('search').value = c.name;
+          renderLists();
+          $('allTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        },
+      },
+        h('strong', {}, c.name),
+        h('span', { class: 'muted' }, [c.email, c.phone].filter(Boolean).join(' · ') || 'Sans coordonnées'),
+        h('span', { class: 'muted' }, bits.join(' · ')));
+    })
+    : [h('div', { class: 'empty' }, 'Tes clients apparaîtront ici dès ta première soumission.')]));
+}
+
 function renderLists() {
+  renderClients();
   const today = todayISO();
   const needle = fold(state.search.trim());
   const filtered = state.quotes.filter((q) =>

@@ -734,3 +734,8 @@ dialog.sign-sheet { width: min(640px, 100vw); }
 html { overflow-x: clip; }
 .appbar .wrap { min-width: 0; }
 @media (max-width: 599px) { .appbar-right.has-net #planChip { display: none; } }
+
+/* Fiches clients (liste dérivée des soumissions) */
+.muted { color: var(--muted); font-size: 14px; margin: 0 0 10px; }
+.client-row { display: grid; gap: 2px; width: 100%; text-align: left; font: inherit; cursor: pointer; }
+.client-row .muted { margin: 0; font-size: 13px; }

@@ -1,13 +1,13 @@
 // Service worker de Soumission Pro : l'app s'ouvre sans réseau, avec les dernières données reçues.
 // Ne touche jamais aux pages client (/s/, /f/), au site public, à la connexion ni aux paiements.
-const VERSION = 'sp-2.6.0';
+const VERSION = 'sp-2.6.1';
 const SHELL = `${VERSION}-shell`;
 const API = 'sp-api';
 const SHELL_FILES = [
   '/app', '/dossier', '/manifest.webmanifest',
   '/assets/styles.css', '/assets/app.js', '/assets/store.js', '/assets/utils.js', '/assets/money.js',
   '/assets/line-editor.js', '/assets/templates.js', '/assets/invoices-ui.js', '/assets/catalog-ui.js',
-  '/assets/sign-ui.js', '/assets/signature-pad.js', '/assets/offline.js', '/assets/dossier-page.js',
+  '/assets/sign-ui.js', '/assets/signature-pad.js', '/assets/offline.js', '/assets/dossier-page.js', '/assets/clients.js',
   '/assets/icon.svg', '/assets/icon-192.png',
 ];
 // Lectures de l'app gardées pour le mode hors ligne (jamais les pages publiques).
